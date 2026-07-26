@@ -1,0 +1,25 @@
+<resources>
+    <string name="auth_title">Neko Status</string>
+    <string name="auth_subtitle">Bring your phone presence into your desktop space</string>
+    <string name="auth_login">Sign in</string>
+    <string name="auth_register">Register</string>
+    <string name="auth_username">Username</string>
+    <string name="auth_password">Password (6+ characters)</string>
+    <string name="auth_continue">Continue</string>
+    <string name="auth_create_account">Create account</string>
+    <string name="auth_scan">Scan QR</string>
+    <string name="auth_manual">Device key</string>
+    <string name="auth_device_key">Device key</string>
+    <string name="auth_validate_key">Validate and connect</string>
+    <string name="auth_security_note">Account and device credentials are encrypted separately with Android Keystore.</string>
+    <string name="auth_server">Server</string>
+    <string name="auth_server_title">Server configuration</string>
+    <string name="auth_production_url">Production server (HTTPS)</string>
+    <string name="auth_local_server">Use local server</string>
+    <string name="auth_local_url">Local server URL</string>
+    <string name="auth_server_save">Save server</string>
+    <string name="auth_server_cancel">Back to authentication</string>
+    <string name="scanner_title">Scan to pair</string>
+    <string name="scanner_back">Back</string>
+    <string name="scanner_support">Place the complete desktop pairing code inside the viewfinder</string>
+</resources>

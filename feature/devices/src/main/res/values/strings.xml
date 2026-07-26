@@ -1,0 +1,27 @@
+<resources>
+    <string name="devices_title">设备</string>
+    <string name="devices_support">管理本机接入、系统权限和桌面小组件</string>
+    <string name="devices_this_device">此 Android 设备</string>
+    <string name="devices_connected">已连接</string>
+    <string name="permissions_title">完成设备设置</string>
+    <string name="permissions_onboarding_support">按需逐项授权；无障碍增强始终可选。</string>
+    <string name="permissions_section">系统访问</string>
+    <string name="permissions_granted">已授权</string>
+    <string name="permissions_not_granted">未授权</string>
+    <string name="permissions_open_system">前往系统设置</string>
+    <string name="permissions_ready">基础设置已完成</string>
+    <string name="permissions_ready_support">之后可随时在“设备”中检查或调整权限。</string>
+    <string name="permissions_continue">进入 Neko Status</string>
+    <string name="permission_notifications">通知</string>
+    <string name="permission_notifications_support">显示合规的前台服务状态与停止操作。</string>
+    <string name="permission_usage">使用情况访问</string>
+    <string name="permission_usage_support">识别当前前台应用；不会读取应用内容。</string>
+    <string name="permission_media">媒体通知访问</string>
+    <string name="permission_media_support">识别正在播放的媒体标题与艺术家。</string>
+    <string name="permission_accessibility">无障碍增强（可选）</string>
+    <string name="permission_accessibility_support">在厂商限制使用情况数据时增强前台应用识别。</string>
+    <string name="widgets_title">小组件</string>
+    <string name="widgets_status_title">关注状态 4×2</string>
+    <string name="widgets_status_support">展示可见用户及其设备、应用、电量和媒体状态。</string>
+    <string name="widgets_open_settings">添加到主屏幕</string>
+</resources>

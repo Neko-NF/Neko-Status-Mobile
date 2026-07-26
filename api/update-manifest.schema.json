@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Neko-NF/Neko-Status-Mobile/blob/main/api/update-manifest.schema.json",
+  "title": "Neko Status update manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "versionCode",
+    "packageName",
+    "sha256",
+    "apkAsset",
+    "certificateSha256"
+  ],
+  "properties": {
+    "version": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "versionCode": { "type": "integer", "minimum": 1 },
+    "packageName": { "const": "com.nekonf.nekostatus" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "apkAsset": { "type": "string", "maxLength": 160, "pattern": "^[A-Za-z0-9._-]+\\.apk$" },
+    "certificateSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

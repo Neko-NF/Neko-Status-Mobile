@@ -1,0 +1,3 @@
+-keepattributes Signature,*Annotation*
+-keep class com.nekonf.nekostatus.core.network.dto.** { *; }
+-dontwarn org.conscrypt.**

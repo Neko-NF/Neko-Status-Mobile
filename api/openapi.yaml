@@ -1,0 +1,277 @@
+openapi: 3.0.3
+info:
+  title: Neko Status Mobile compatibility contract
+  version: 2.0.0-alpha.2
+servers:
+  - url: https://nekostatus.koirin.com
+paths:
+  /api/auth/login:
+    post:
+      summary: Login with username and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRequest' }
+      responses:
+        '200': { description: Authentication response }
+  /api/auth/register:
+    post:
+      summary: Register with username and password
+      responses:
+        '200': { description: Authentication response }
+  /api/auth/device-key:
+    post:
+      summary: Create or recover a device key
+      responses:
+        '200': { description: Device credential }
+  /api/pair/handshake:
+    post:
+      summary: Pair a scanned handshake token
+      responses:
+        '200': { description: Device credential }
+  /api/device/validate:
+    get:
+      summary: Validate a device credential
+      responses:
+        '200': { description: Validation response }
+  /api/v2/status/report:
+    post:
+      summary: Report device status
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { type: string, description: JSON status payload }
+                file: { type: string, format: binary, description: Current foreground application icon as PNG; Android does not upload screenshots }
+      responses:
+        '200': { description: Accepted }
+        '401': { description: Invalid device credential }
+        '403': { description: Revoked device credential }
+        '404': { description: Unknown device }
+        '429': { description: Rate limited }
+  /api/widget/token:
+    post:
+      summary: Exchange a bound device credential for a limited widget token
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WidgetTokenRequest' }
+      responses:
+        '200':
+          description: Widget credential and bound user metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WidgetTokenResponse' }
+        '400': { $ref: '#/components/responses/ApiError' }
+        '401': { $ref: '#/components/responses/ApiError' }
+        '403': { $ref: '#/components/responses/ApiError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v2/widget/status:
+    get:
+      summary: Read followed users and their device status for an Android home-screen widget
+      security: [{ widgetBearer: [] }]
+      parameters:
+        - name: userId
+          in: query
+          required: false
+          description: Select one visible user. Non-admin visibility remains server-controlled.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of visible users returned for summary mode.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Visible users and their devices
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WidgetStatusResponse' }
+        '401': { $ref: '#/components/responses/ApiError' }
+        '403': { $ref: '#/components/responses/ApiError' }
+        '404': { $ref: '#/components/responses/ApiError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ApiError' }
+        '501': { description: Widget status capability is not implemented by this server }
+components:
+  securitySchemes:
+    deviceBearer: { type: http, scheme: bearer }
+    widgetBearer: { type: http, scheme: bearer }
+  responses:
+    ApiError:
+      description: JSON API error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: Request rate limited; Retry-After may contain seconds or an HTTP date
+      headers:
+        Retry-After:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    AuthRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    WidgetTokenRequest:
+      type: object
+      required: [deviceKey]
+      properties:
+        deviceKey: { type: string, writeOnly: true }
+    WidgetTokenResponse:
+      type: object
+      required: [success, widgetToken]
+      properties:
+        success: { type: boolean }
+        widgetToken: { type: string, writeOnly: true }
+        userId: { oneOf: [{ type: string }, { type: integer }] }
+        username: { type: string }
+        userType: { type: string, enum: [admin, user] }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        code: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+    WidgetStatusResponse:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        timestamp: { type: string, format: date-time, nullable: true }
+        data:
+          type: object
+          nullable: true
+          properties:
+            users:
+              type: array
+              items: { $ref: '#/components/schemas/WidgetUser' }
+        users:
+          type: array
+          description: Legacy top-level fallback accepted by the Android client.
+          items: { $ref: '#/components/schemas/WidgetUser' }
+        code: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+    WidgetUser:
+      type: object
+      required: [username]
+      properties:
+        userId: { oneOf: [{ type: string }, { type: integer }] }
+        id: { oneOf: [{ type: string }, { type: integer }] }
+        username: { type: string }
+        avatarUrl: { type: string, nullable: true }
+        isOnline: { type: boolean }
+        userStatus: { type: string, enum: [online, away, offline], nullable: true }
+        lastSeen: { type: string, format: date-time, nullable: true }
+        devices:
+          type: array
+          items: { $ref: '#/components/schemas/WidgetDevice' }
+        currentApp:
+          allOf: [{ $ref: '#/components/schemas/WidgetCurrentApp' }]
+          nullable: true
+        device:
+          allOf: [{ $ref: '#/components/schemas/WidgetLegacyDevice' }]
+          nullable: true
+        music:
+          allOf: [{ $ref: '#/components/schemas/MediaStatus' }]
+          nullable: true
+    WidgetDevice:
+      type: object
+      properties:
+        deviceId: { oneOf: [{ type: string }, { type: integer }] }
+        id: { oneOf: [{ type: string }, { type: integer }] }
+        deviceName: { type: string }
+        deviceModel: { type: string, nullable: true }
+        deviceType: { type: string, nullable: true }
+        isOnline: { type: boolean }
+        userStatus: { type: string, enum: [online, away, offline], nullable: true }
+        lastUpdate: { type: string, format: date-time, nullable: true }
+        lastSeen: { type: string, format: date-time, nullable: true }
+        batteryLevel: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        isCharging: { type: boolean, nullable: true }
+        status:
+          allOf: [{ $ref: '#/components/schemas/WidgetDeviceStatus' }]
+          nullable: true
+        currentApp:
+          allOf: [{ $ref: '#/components/schemas/WidgetCurrentApp' }]
+          nullable: true
+        music:
+          allOf: [{ $ref: '#/components/schemas/MediaStatus' }]
+          nullable: true
+        screenshotUrl:
+          type: string
+          nullable: true
+          description: Full remote-device screenshot URL or server-relative path.
+        screenshotThumbnailUrl:
+          type: string
+          nullable: true
+          description: Preferred thumbnail URL or server-relative path for widget rendering.
+        screenshotUpdatedAt: { type: string, format: date-time, nullable: true }
+    WidgetDeviceStatus:
+      type: object
+      properties:
+        appName: { type: string }
+        packageName: { type: string }
+        appIconUrl: { type: string, nullable: true }
+        iconUrl: { type: string, nullable: true }
+        batteryLevel: { type: integer, minimum: 0, maximum: 100 }
+        isCharging: { type: boolean }
+        screenshotUrl: { type: string, nullable: true }
+        screenshotThumbnailUrl: { type: string, nullable: true }
+        screenshotUpdatedAt: { type: string, format: date-time, nullable: true }
+        userStatus: { type: string, enum: [online, away, offline] }
+        music:
+          allOf: [{ $ref: '#/components/schemas/MediaStatus' }]
+          nullable: true
+    WidgetCurrentApp:
+      type: object
+      properties:
+        appName: { type: string }
+        packageName: { type: string }
+        appIconUrl: { type: string, nullable: true }
+        iconUrl: { type: string, nullable: true }
+        music:
+          allOf: [{ $ref: '#/components/schemas/MediaStatus' }]
+          nullable: true
+    WidgetLegacyDevice:
+      type: object
+      properties:
+        deviceId: { oneOf: [{ type: string }, { type: integer }] }
+        deviceName: { type: string }
+        deviceModel: { type: string, nullable: true }
+        deviceType: { type: string, nullable: true }
+        isOnline: { type: boolean }
+        userStatus: { type: string, enum: [online, away, offline], nullable: true }
+        lastUpdate: { type: string, format: date-time, nullable: true }
+        lastSeen: { type: string, format: date-time, nullable: true }
+        batteryLevel: { type: integer, minimum: 0, maximum: 100 }
+        isCharging: { type: boolean }
+        screenshotUrl: { type: string, nullable: true }
+        screenshotThumbnailUrl: { type: string, nullable: true }
+        screenshotUpdatedAt: { type: string, format: date-time, nullable: true }
+    MediaStatus:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        artist: { type: string, nullable: true }
+        album: { type: string, nullable: true }
+        packageName: { type: string, nullable: true }
+        isPlaying: { type: boolean }
+    ApiError:
+      type: object
+      properties:
+        code: { type: string, nullable: true }
+        errorCode: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+        error: { type: string, nullable: true }

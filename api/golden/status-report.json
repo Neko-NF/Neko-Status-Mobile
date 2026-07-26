@@ -1,0 +1,17 @@
+{
+  "deviceKey": "device_key_fixture",
+  "deviceFingerprint": "installation_id_fixture",
+  "clientVersion": "2.0.0-alpha.1",
+  "appVersion": "2.0.0-alpha.1",
+  "appName": "Example App",
+  "packageName": "com.example.app",
+  "status": "online",
+  "screenStatus": "on",
+  "batteryLevel": 83,
+  "isCharging": false,
+  "music": {
+    "title": "Fixture Track",
+    "artist": "Fixture Artist",
+    "isPlaying": true
+  }
+}

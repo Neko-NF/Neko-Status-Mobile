@@ -1,0 +1,25 @@
+<resources>
+    <string name="overview_title">Overview</string>
+    <string name="overview_device_unbound">No device bound</string>
+    <string name="overview_running">Running</string>
+    <string name="overview_stopped">Stopped</string>
+    <string name="overview_reporting_active">Status reporting is active</string>
+    <string name="overview_reporting_paused">Status reporting is paused</string>
+    <string name="overview_active_support">The foreground service keeps the latest state current.</string>
+    <string name="overview_paused_support">Starting shows a persistent notification. You can stop it any time.</string>
+    <string name="overview_start">Start reporting</string>
+    <string name="overview_stop">Stop reporting</string>
+    <string name="overview_current_state">Current device state</string>
+    <string name="overview_battery">Battery</string>
+    <string name="overview_battery_charging">Charging</string>
+    <string name="overview_screen">Screen</string>
+    <string name="overview_screen_on">Unlocked</string>
+    <string name="overview_screen_locked">Locked</string>
+    <string name="overview_screen_off">Screen off</string>
+    <string name="overview_foreground_app">Current app</string>
+    <string name="overview_waiting_snapshot">Waiting for first snapshot</string>
+    <string name="overview_last_success">Last successful report</string>
+    <string name="overview_never">No successful report yet</string>
+    <string name="overview_report_error">Reporting needs attention</string>
+    <string name="overview_review_permissions">Review system access</string>
+</resources>

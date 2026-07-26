@@ -1,0 +1,27 @@
+<resources>
+    <string name="devices_title">Devices</string>
+    <string name="devices_support">Manage this device, system access, and widgets</string>
+    <string name="devices_this_device">This Android device</string>
+    <string name="devices_connected">Connected</string>
+    <string name="permissions_title">Finish device setup</string>
+    <string name="permissions_onboarding_support">Grant access one step at a time. Accessibility enhancement is always optional.</string>
+    <string name="permissions_section">System access</string>
+    <string name="permissions_granted">Granted</string>
+    <string name="permissions_not_granted">Not granted</string>
+    <string name="permissions_open_system">Open system settings</string>
+    <string name="permissions_ready">Basic setup is complete</string>
+    <string name="permissions_ready_support">Review or change access later from Devices.</string>
+    <string name="permissions_continue">Enter Neko Status</string>
+    <string name="permission_notifications">Notifications</string>
+    <string name="permission_notifications_support">Shows the compliant foreground-service state and stop action.</string>
+    <string name="permission_usage">Usage access</string>
+    <string name="permission_usage_support">Identifies the foreground app without reading app content.</string>
+    <string name="permission_media">Media notification access</string>
+    <string name="permission_media_support">Identifies the active media title and artist.</string>
+    <string name="permission_accessibility">Accessibility enhancement (optional)</string>
+    <string name="permission_accessibility_support">Improves foreground-app detection when vendor restrictions limit usage data.</string>
+    <string name="widgets_title">Widgets</string>
+    <string name="widgets_status_title">Followed status 4×2</string>
+    <string name="widgets_status_support">Shows visible users, devices, apps, battery, and media status.</string>
+    <string name="widgets_open_settings">Add to Home screen</string>
+</resources>

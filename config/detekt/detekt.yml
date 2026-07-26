@@ -1,0 +1,29 @@
+naming:
+  FunctionNaming:
+    ignoreAnnotated:
+      - 'Composable'
+  MatchingDeclarationName:
+    excludes:
+      - '**/core/designsystem/**'
+complexity:
+  LongMethod:
+    ignoreAnnotated:
+      - 'Composable'
+  CyclomaticComplexMethod:
+    ignoreAnnotated:
+      - 'Composable'
+  TooManyFunctions:
+    ignorePrivate: true
+style:
+  MaxLineLength:
+    active: false
+  ReturnCount:
+    max: 3
+  UnusedPrivateMember:
+    ignoreAnnotated:
+      - 'Preview'
+  MagicNumber:
+    active: false
+exceptions:
+  TooGenericExceptionCaught:
+    active: false

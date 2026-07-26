@@ -1,0 +1,12 @@
+<resources>
+    <string name="activity_title">Activity</string>
+    <string name="activity_history">History</string>
+    <string name="activity_announcements">News</string>
+    <string name="activity_follows">Follows</string>
+    <string name="activity_unavailable_title">Not available on this server</string>
+    <string name="activity_unavailable_message">This view is ready and will turn on when the server exposes the capability.</string>
+    <string name="activity_loading">Loading</string>
+    <string name="activity_empty">Nothing here yet</string>
+    <string name="activity_error">Could not load this view</string>
+    <string name="activity_offline">You are offline. Try again after reconnecting.</string>
+</resources>

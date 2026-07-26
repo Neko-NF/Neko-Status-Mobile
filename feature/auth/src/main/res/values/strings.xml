@@ -1,0 +1,25 @@
+<resources>
+    <string name="auth_title">Neko Status</string>
+    <string name="auth_subtitle">让手机状态自然融入你的桌面空间</string>
+    <string name="auth_login">登录</string>
+    <string name="auth_register">注册</string>
+    <string name="auth_username">用户名</string>
+    <string name="auth_password">密码（至少 6 位）</string>
+    <string name="auth_continue">继续</string>
+    <string name="auth_create_account">创建账号</string>
+    <string name="auth_scan">扫码配对</string>
+    <string name="auth_manual">手动密钥</string>
+    <string name="auth_device_key">设备密钥</string>
+    <string name="auth_validate_key">验证并连接</string>
+    <string name="auth_security_note">账号令牌与设备密钥独立加密保存在 Android Keystore 中。</string>
+    <string name="auth_server">服务器</string>
+    <string name="auth_server_title">服务器配置</string>
+    <string name="auth_production_url">生产服务器（HTTPS）</string>
+    <string name="auth_local_server">使用局域网服务器</string>
+    <string name="auth_local_url">局域网地址</string>
+    <string name="auth_server_save">保存服务器</string>
+    <string name="auth_server_cancel">返回认证</string>
+    <string name="scanner_title">扫码配对</string>
+    <string name="scanner_back">返回</string>
+    <string name="scanner_support">将桌面端配对二维码完整放入取景框</string>
+</resources>

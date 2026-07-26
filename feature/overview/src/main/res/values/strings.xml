@@ -1,0 +1,25 @@
+<resources>
+    <string name="overview_title">概览</string>
+    <string name="overview_device_unbound">尚未绑定设备</string>
+    <string name="overview_running">运行中</string>
+    <string name="overview_stopped">已停止</string>
+    <string name="overview_reporting_active">状态上报已开启</string>
+    <string name="overview_reporting_paused">状态上报已暂停</string>
+    <string name="overview_active_support">前台服务会持续更新最新状态。</string>
+    <string name="overview_paused_support">启动后会显示持续通知，可随时停止。</string>
+    <string name="overview_start">启动状态上报</string>
+    <string name="overview_stop">停止状态上报</string>
+    <string name="overview_current_state">当前设备状态</string>
+    <string name="overview_battery">电量</string>
+    <string name="overview_battery_charging">正在充电</string>
+    <string name="overview_screen">屏幕</string>
+    <string name="overview_screen_on">已解锁</string>
+    <string name="overview_screen_locked">已锁定</string>
+    <string name="overview_screen_off">已息屏</string>
+    <string name="overview_foreground_app">当前应用</string>
+    <string name="overview_waiting_snapshot">等待首次采集</string>
+    <string name="overview_last_success">最后成功上报</string>
+    <string name="overview_never">尚未成功上报</string>
+    <string name="overview_report_error">上报需要处理</string>
+    <string name="overview_review_permissions">检查系统权限</string>
+</resources>
