@@ -72,13 +72,15 @@
 - 根因：安装入口使用一次性调用；旧桥接 Activity 配置了 `noHistory` 和 `Theme.NoDisplay`，
   打开权限设置后立即结束，没有保存等待状态或处理返回结果。安装 Intent 也没有兼容回退和
   可区分的失败结果。
-- 解决：`2.0.0-alpha.4` 候选版本使用有状态的桥接 Activity 等待权限页结果，返回后重新检查
+- 解决：`2.0.0-alpha.4` 使用有状态的桥接 Activity 等待权限页结果，返回后重新检查
   权限并续接安装；通过 FileProvider 只读 `content://` URI、读权限 flag 和 `ClipData` 交给
   系统安装器，并在 `ACTION_VIEW` 不可用时尝试 `ACTION_INSTALL_PACKAGE`。所有启动方式失败时
   显示明确提示并保留已验证 APK。
 - 预防：单元测试覆盖权限往返续接、只读 URI 授权、安装 Intent 回退、无 READY 包和下载完成
   Receiver 的平台权限；公开发布验收必须从上一公开版本走完整应用内更新链路，不能用
   `adb install -r` 代替。
-- 当前验证：修复和自动化覆盖已进入 `2.0.0-alpha.4` 候选代码；该版本尚未在本文中记为公开，
-  从 `2.0.0-alpha.3` 到该版本的公开升级和实体机验收仍待实际 Release 后记录。API 36 模拟器
-  结果不能表述为 ColorOS 实体机通过。
+- 当前验证：[`v2.0.0-alpha.4`](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.4)
+  已公开并设为 latest，发布运行 `30256916707` 成功。API 36 模拟器上的同签名验收包确认
+  授权返回后自动拉起 Google 系统安装器；公开 `alpha.3` 也已下载并验证公开 `alpha.4`，
+  并在旧版既有的重启恢复和二次点击后显示“要更新此应用吗？”。最终安装已取消，实体设备
+  未连接，所以只能记为公开安装器入口通过，不能表述为覆盖安装或 ColorOS 实体机通过。

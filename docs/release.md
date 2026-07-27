@@ -25,8 +25,8 @@ APK 上限为 250 MiB，且必须通过 SHA-256、包名、真实 `versionCode`/
 `ACTION_INSTALL_PACKAGE`；两者均不可用时显示可理解的错误并保留已验证 APK。普通 Android
 应用不能静默安装，最后一步始终由系统安装器展示包信息并要求用户确认。
 
-上述授权返回续接和 Intent 回退已进入 `2.0.0-alpha.4` 候选代码。在该版本作为公开 Release
-发布并完成从上一公开版本的应用内升级验证前，不得将其记为已发布或已通过公开升级验收。
+上述授权返回续接和 Intent 回退已随 `2.0.0-alpha.4` 公开发布。API 36 模拟器上的同签名
+验收包已确认授权返回后自动拉起 Google 系统安装器；这仍不能替代不同 OEM 的实体机验收。
 
 ## CI 发布顺序
 
@@ -83,6 +83,24 @@ Gradle 依赖校验元数据尚未启用。后续应在依赖集合稳定后生�
 `com.nekonf.nekostatus`、APK 大小 27,097,665 字节、SHA-256
 `69eead96d3d857b97770365027b539ba74e3fde2c90a5d4412ffab9bc445ef13`，且 GitHub digest、
 清单、校验文件、APK 元数据和签名证书一致。
+
+`v2.0.0-alpha.4` 已于 2026-07-27 作为普通 Release 公开并设为 latest：
+
+- [Release](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.4)
+- [Publish signed Android release 运行 30256916707](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30256916707)
+- [默认分支 Verify Android 运行 30256640887](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30256640887)
+
+通过无凭据公开地址重新下载三个资产后，确认版本 `2.0.0-alpha.4` / `2000004`、包名
+`com.nekonf.nekostatus`、APK 大小 27,099,465 字节、SHA-256
+`8ec28ba6933b2537c5f27797764894f969af2bd4928c985fb7bd96a32868f136`，且 GitHub digest、
+`.sha256`、`update.json`、APK 元数据和官方证书
+`f1d996d6a5cda3c2b285425dffa45198490c8c00a0ff84488f6cf19025b2e040` 一致。
+
+API 36 模拟器中的公开 `2.0.0-alpha.3` 已通过应用内入口找到并下载公开
+`2.0.0-alpha.4`。旧版在 DownloadManager 成功后仍停留在 91%，重启应用后按既有恢复逻辑
+完成验证并进入 READY；授予未知来源权限并再次点击安装后，Google 系统安装器显示
+“要更新此应用吗？”。按本轮范围取消了最终安装，因此这证明公开最新版能够被旧版下载、
+验证并交给系统安装器，但不构成覆盖安装、数据保留或实体机升级验收。
 
 ## 真机发布门禁
 

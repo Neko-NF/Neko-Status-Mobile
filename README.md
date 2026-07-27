@@ -11,10 +11,11 @@ Neko Status 的 Android 原生客户端，使用 Kotlin、Jetpack Compose 和单
 自动下载默认关闭；下载完成后会校验 APK 的大小、SHA-256、包名、`versionCode`/`versionName`、
 完整签名集合和官方证书。安装仍由 Android 系统要求用户确认，应用不会静默安装。
 
-`2.0.0-alpha.4` 候选版本修复系统安装器交接：缺少“安装未知应用”权限时先打开当前应用的
-系统设置，授权返回后自动继续；若首选安装 Intent 不可用则尝试系统兼容回退。该版本正式发布
-并完成从上一公开版本的升级验证前，[最新版本](https://github.com/Neko-NF/Neko-Status-Mobile/releases/latest)
-仍以 GitHub Release 页面实际返回的版本为准。
+[`2.0.0-alpha.4`](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.4)
+已公开并设为 latest。该版本修复系统安装器交接：缺少“安装未知应用”权限时先打开当前应用的
+系统设置，授权返回后自动继续；若首选安装 Intent 不可用则尝试系统兼容回退。
+[最新版本](https://github.com/Neko-NF/Neko-Status-Mobile/releases/latest) 始终以 GitHub
+Release 页面实际返回的版本为准。
 
 更新中心也可切换到公开的个人 `owner/repository`。个人仓库必须使用兼容的 `update.json`，
 且 APK 必须与当前安装版本同包名、同签名；应用不保存 GitHub Token，也不支持私有仓库。
