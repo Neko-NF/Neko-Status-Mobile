@@ -14,6 +14,20 @@ APK 上限为 250 MiB，且必须通过 SHA-256、包名、真实 `versionCode`/
 签名和清单证书指纹校验。下载完成广播只调度唯一 WorkManager 任务，实际哈希和 APK 解析
 不占用广播执行窗口；进程重启后会恢复未完成下载或重建验证任务。
 
+## 系统安装器交接
+
+只有状态为 READY 且仍满足文件存在、大小、版本和仓库归属约束的 APK 才能交给系统安装器。
+缺少“安装未知应用”权限时，客户端打开当前应用对应的系统设置，并由有状态桥接 Activity 在
+用户返回后重新检查权限和继续安装。APK 必须通过 FileProvider 的只读 `content://` URI 共享，
+同时提供读权限 flag 和 `ClipData`，不得暴露文件路径。
+
+客户端优先使用 `ACTION_VIEW` 打开系统 APK 安装器，不可用时回退到
+`ACTION_INSTALL_PACKAGE`；两者均不可用时显示可理解的错误并保留已验证 APK。普通 Android
+应用不能静默安装，最后一步始终由系统安装器展示包信息并要求用户确认。
+
+上述授权返回续接和 Intent 回退已进入 `2.0.0-alpha.4` 候选代码。在该版本作为公开 Release
+发布并完成从上一公开版本的应用内升级验证前，不得将其记为已发布或已通过公开升级验收。
+
 ## CI 发布顺序
 
 1. 候选提交先合入受保护的默认分支，并等待 Verify Android 通过。
@@ -56,11 +70,30 @@ Gradle 依赖校验元数据尚未启用。后续应在依赖集合稳定后生�
 `gradle/verification-metadata.xml`，以 strict dependency verification 保护签名构建；不要在
 未审查大量自动生成校验值时直接启用。
 
+## 已确认公开发布
+
+`v2.0.0-alpha.3` 已于 2026-07-27 作为普通 Release 公开并设为 latest：
+
+- [Release](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.3)
+- [Publish signed Android release 运行 30250919010](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30250919010)
+- [默认分支 Verify Android 运行 30250585317](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30250585317)
+
+公开附件包含 `neko-status-2.0.0-alpha.3-universal.apk`、同名 `.sha256` 和 `update.json`，
+并带 GitHub 自动生成的源码归档。远程下载复核确认版本 `2.0.0-alpha.3` / `2000003`、包名
+`com.nekonf.nekostatus`、APK 大小 27,097,665 字节、SHA-256
+`69eead96d3d857b97770365027b539ba74e3fde2c90a5d4412ffab9bc445ef13`，且 GitHub digest、
+清单、校验文件、APK 元数据和签名证书一致。
+
 ## 真机发布门禁
 
-发布前必须使用同一签名证书完成上一版本到候选版本的覆盖升级，确认应用数据保留，并验证
-GitHub API、`update.json`、APK 下载、SHA-256、证书摘要和 APK 元数据一致。普通 Android
-应用不能静默安装；自动化范围止于检查、下载和验证，最终安装必须由系统安装器确认。
+发布前必须从上一公开 latest 使用同一签名证书走完整应用内更新链路，完成检查、下载、验证、
+未知来源授权往返、系统安装器确认和覆盖升级，确认应用数据保留，并验证 GitHub API、
+`update.json`、APK 下载、SHA-256、证书摘要和 APK 元数据一致。`adb install -r` 只能辅助
+验证签名兼容和数据保留，不能证明应用能够拉起系统安装器。
+
+模拟器可验证 API 级别行为、Intent、URI 授权、签名和状态恢复，但不能替代 OEM Launcher、
+权限页和安装器的实体机验收。截至 2026-07-27，本轮仅连接 API 36 模拟器，实体设备未连接；
+因此不得把 `2.0.0-alpha.4` 候选版本描述为已完成 ColorOS 实体机升级验收。
 
 个人仓库使用相同清单契约。APK 的当前签名集合必须与已安装版本完全一致；首版不支持证书
 轮换。使用自有签名的 fork 必须先作为自己的基线安装，不能覆盖官方安装版。

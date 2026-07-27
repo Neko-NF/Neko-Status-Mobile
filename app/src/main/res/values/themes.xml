@@ -6,4 +6,12 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:colorAccent">#007D8A</item>
     </style>
+
+    <style name="Theme.NekoStatus.InstallBridge" parent="Theme.NekoStatus">
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>

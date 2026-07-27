@@ -41,8 +41,7 @@
             android:name=".UpdateInstallActivity"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:noHistory="true"
-            android:theme="@android:style/Theme.NoDisplay" />
+            android:theme="@style/Theme.NekoStatus.InstallBridge" />
 
         <service
             android:name=".ReportingService"
@@ -93,7 +92,8 @@
 
         <receiver
             android:name=".UpdateDownloadReceiver"
-            android:exported="false">
+            android:exported="true"
+            android:permission="android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS">
             <intent-filter>
                 <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
             </intent-filter>

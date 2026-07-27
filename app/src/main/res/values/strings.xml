@@ -64,4 +64,7 @@
     <string name="update_latest">当前已是最新版本</string>
     <string name="update_check_failed">无法检查更新，请稍后重试</string>
     <string name="update_verification_failed">更新包验证失败，已阻止安装</string>
+    <string name="update_install_permission_required">请允许 Neko Status 安装未知应用；更新包已保留</string>
+    <string name="update_install_not_ready">没有可安装的已验证更新，请重新检查更新</string>
+    <string name="update_install_unavailable">无法打开系统安装器；更新包已保留</string>
 </resources>

@@ -46,8 +46,25 @@
 ## 阶段 4：扩展、更新与发布
 
 - [ ] 功能门控的历史、公告、设备和关注动态
-- [ ] 无 Token GitHub Releases 更新、SHA-256 与签名校验
-- [ ] CI 发布 APK、校验和、更新清单和变更日志
+- [x] 无 Token GitHub Releases 更新、SHA-256 与签名校验
+- [x] CI 发布 APK、校验和、更新清单和变更日志
+
+公开发布验证（2026-07-27）：[`v2.0.0-alpha.3`](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.3)
+已作为普通 Release 公开并设为 latest，而不是 GitHub prerelease。发布
+[运行 30250919010](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30250919010)
+的 preflight、无密钥 verify 和签名 release 均成功；默认分支
+[Verify 运行 30250585317](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30250585317)
+成功。远程重新下载的 APK、`.sha256` 和 `update.json` 已交叉核对：版本为
+`2.0.0-alpha.3` / `2000003`，包名为 `com.nekonf.nekostatus`，APK 大小为
+27,097,665 字节，SHA-256 为
+`69eead96d3d857b97770365027b539ba74e3fde2c90a5d4412ffab9bc445ef13`；GitHub
+资产大小与 digest、清单、校验文件、APK 元数据和签名证书一致。
+
+安装交接修复（待公开验证）：`2.0.0-alpha.4` 候选版本在“安装未知应用”授权返回后重新检查
+权限并自动继续拉起系统安装器，同时为安装 Intent 提供兼容回退；安装器不可用时保留已验证
+APK。该候选版本尚未在本文中记为公开 Release，也未记为公开升级验收完成。发布前必须从公开
+`2.0.0-alpha.3` 在应用内走完检查、下载、验证、点击安装、授权往返和系统安装器确认，并在
+Release 发布后补记真实运行号、资产摘要和最终版本。`adb install -r` 不能替代这项验收。
 
 ## 真机验收
 
@@ -55,6 +72,13 @@
 - [ ] 安装、重启、息屏、锁屏、切网、断网恢复、进程回收、通知关闭、Doze、媒体切换
 - [ ] 12 小时稳定网络浸泡测试
 - [ ] 记录 ColorOS 后台限制；系统“强行停止”后不绕过 Android 规则
+
+截至 2026-07-27，本轮发布链路仅连接 API 36 模拟器，实体设备未连接。模拟器可以验证版本、
+签名、Intent 和应用状态，但不等于 ColorOS 实体机验收；因此以上真机项目保持未完成。
+
+模拟器发布局部验证（2026-07-27）：从 GitHub 远程下载的正式 `2.0.0-alpha.3` APK 已覆盖安装
+到 API 36 模拟器，版本更新为 `2000003`，登录会话得到保留。这证明该发布 APK 可以覆盖安装，
+但不证明 `2.0.0-alpha.4` 的应用内安装交接或实体机升级链路已经通过。
 
 已完成的局部验证（2026-07-26）：Debug APK 覆盖安装并冷启动成功。截图确认概览分组、唯一水青主操作和水青导航选中态正常；未登录、未触发真实上报，故认证、权限、锁屏、网络和媒体流程仍保持待验收。真机截图只保留在被忽略的本地产物目录。
 

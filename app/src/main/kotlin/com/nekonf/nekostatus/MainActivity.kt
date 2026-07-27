@@ -233,7 +233,7 @@ private fun MainShell(
                     updateUiState = updateUiState,
                     onCheckForUpdates = { UpdateManager.checkNow(context) },
                     onDownloadUpdate = { UpdateManager.downloadAvailableUpdate(context) },
-                    onInstallUpdate = { UpdateManager.installReadyUpdate(context) },
+                    onInstallUpdate = { UpdateInstallActivity.launch(context) },
                     onReportingStopRequired = { ReportingService.stopImmediately(context) },
                     onWidgetScheduleChanged = { enabled, interval ->
                         WidgetRefreshScheduler.sync(context, enabled, interval)

@@ -1,10 +1,17 @@
 package com.nekonf.nekostatus
 
+import android.app.Activity
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Environment
+import android.provider.Settings
 import com.nekonf.nekostatus.core.model.UpdateFailureStage
 import com.nekonf.nekostatus.core.model.UpdateSettings
 import com.nekonf.nekostatus.core.model.UpdateSource
@@ -281,10 +288,19 @@ class UpdatePayloadTest {
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class UpdateInstallNotificationTest {
+    private val context: Application
+        get() = RuntimeEnvironment.getApplication()
+
+    @After
+    fun cleanUpInstallState() {
+        context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE).edit().clear().commit()
+        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.resolve(READY_APK)?.delete()
+        shadowOf(context.packageManager).setCanRequestPackageInstalls(false)
+        shadowOf(context).clearNextStartedActivities()
+    }
+
     @Test
     fun `verified update notification launches install activity and remains available`() {
-        val context = RuntimeEnvironment.getApplication()
-
         UpdateManager.postInstallNotification(context)
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -297,8 +313,19 @@ class UpdateInstallNotificationTest {
     }
 
     @Test
+    fun `download completion receiver is exported only behind the platform signature permission`() {
+        val receiver =
+            context.packageManager.getReceiverInfo(
+                ComponentName(context, UpdateDownloadReceiver::class.java),
+                PackageManager.ComponentInfoFlags.of(0),
+            )
+
+        assertTrue(receiver.exported)
+        assertEquals("android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS", receiver.permission)
+    }
+
+    @Test
     fun `stale verification task cannot publish install notification`() {
-        val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("neko-update-downloads", Context.MODE_PRIVATE)
             .edit()
             .clear()
@@ -313,10 +340,104 @@ class UpdateInstallNotificationTest {
     }
 
     @Test
-    fun `install activity finishes immediately`() {
+    fun `install manager launches verified content uri with read permission`() {
+        val apk = prepareReadyUpdate()
+        shadowOf(context.packageManager).setCanRequestPackageInstalls(true)
+        val launchedIntents = mutableListOf<Intent>()
+        val uri = Uri.parse("content://${BuildConfig.APPLICATION_ID}.files/updates/$READY_APK")
+
+        val result =
+            UpdateManager.installReadyUpdate(
+                context = context,
+                resolveApkUri = { uri },
+                launchIntent = { launchedIntents += it },
+            )
+
+        assertEquals(UpdateInstallResult.INSTALLER_STARTED, result)
+        val installIntent = launchedIntents.single()
+        assertEquals(Intent.ACTION_VIEW, installIntent.action)
+        assertEquals("application/vnd.android.package-archive", installIntent.type)
+        assertEquals("content", installIntent.data?.scheme)
+        assertEquals("${BuildConfig.APPLICATION_ID}.files", installIntent.data?.authority)
+        assertTrue(installIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        assertTrue(installIntent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertEquals(installIntent.data, installIntent.clipData?.getItemAt(0)?.uri)
+        assertTrue(apk.exists())
+    }
+
+    @Test
+    fun `install bridge resumes installation after unknown source permission`() {
+        val activity = Robolectric.buildActivity(PermissionContinuationActivity::class.java).create().get()
+        val activityShadow = shadowOf(activity)
+        val permissionRequest = requireNotNull(activityShadow.nextStartedActivityForResult)
+
+        assertEquals(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, permissionRequest.intent.action)
+        assertEquals("package:${context.packageName}", permissionRequest.intent.data.toString())
+        assertFalse(activity.isFinishing)
+        requireNotNull(activityShadow.nextStartedActivity)
+
+        activityShadow.receiveResult(permissionRequest.intent, Activity.RESULT_OK, null)
+
+        assertEquals(2, activity.installAttempts)
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test
+    fun `installer launch falls back after an unavailable activity`() {
+        val attempts = mutableListOf<String>()
+
+        val launched =
+            launchFirstSupportedIntent(
+                listOf(Intent("first"), Intent("second")),
+            ) { intent ->
+                attempts += requireNotNull(intent.action)
+                if (intent.action == "first") throw ActivityNotFoundException()
+            }
+
+        assertTrue(launched)
+        assertEquals(listOf("first", "second"), attempts)
+    }
+
+    @Test
+    fun `install activity finishes when no verified update exists`() {
         val activity = Robolectric.buildActivity(UpdateInstallActivity::class.java).create().get()
 
         assertTrue(activity.isFinishing)
+    }
+
+    private fun prepareReadyUpdate(): java.io.File {
+        val apk = requireNotNull(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)).resolve(READY_APK)
+        apk.parentFile?.mkdirs()
+        apk.writeBytes(byteArrayOf(1, 2, 3))
+        context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .putString("path", apk.absolutePath)
+            .putLong("size", apk.length())
+            .putLong("version_code", BuildConfig.VERSION_CODE.toLong() + 1)
+            .putString("version", "next")
+            .putString("repository", UpdateSettings.OFFICIAL_REPOSITORY)
+            .putBoolean("verified", true)
+            .commit()
+        return apk
+    }
+
+    private companion object {
+        const val UPDATE_PREFERENCES = "neko-update-downloads"
+        const val READY_APK = "ready-install-test.apk"
+    }
+
+    class PermissionContinuationActivity : UpdateInstallActivity() {
+        var installAttempts = 0
+
+        override fun installReadyUpdate(): UpdateInstallResult {
+            installAttempts += 1
+            return if (installAttempts == 1) {
+                UpdateInstallResult.PERMISSION_REQUIRED
+            } else {
+                UpdateInstallResult.INSTALLER_STARTED
+            }
+        }
     }
 }
 

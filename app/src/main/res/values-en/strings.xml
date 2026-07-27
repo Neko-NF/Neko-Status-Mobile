@@ -64,4 +64,7 @@
     <string name="update_latest">You are up to date</string>
     <string name="update_check_failed">Could not check for updates. Try again later.</string>
     <string name="update_verification_failed">Update verification failed. Installation was blocked.</string>
+    <string name="update_install_permission_required">Allow Neko Status to install unknown apps. The verified update was kept.</string>
+    <string name="update_install_not_ready">No verified update is ready. Check for updates again.</string>
+    <string name="update_install_unavailable">Could not open the system installer. The verified update was kept.</string>
 </resources>

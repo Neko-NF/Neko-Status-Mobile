@@ -56,4 +56,29 @@
 - 根因：把原生命令直接管道到 `Select-Object -First 1` 会提前关闭下游管道，使 Linux `aapt2` 以非零状态退出；同时，`apksigner` 新版输出以 `V3.0 Signer:` 开头，按第一个冒号分割会截取到错误字段。
 - 解决：先完整捕获原生命令输出和退出码，再在内存中选取需要的行；证书使用严格正则捕获 64 位 SHA-256，并要求唯一证书集合恰好为一个。
 - 预防：发布工作流必须先生成 Draft、精确核对三个资产后再公开；本地用真实 APK 验证 `aapt2` 完整输出和 `apksigner` 多行格式，不能只对伪造单行做解析测试。
-- 当前验证：`actionlint .github/workflows/release.yml` 与本地正式 APK 元数据检查通过；两次失败运行均在创建 Draft Release 前停止，修复后的完整发布结果将在首个公开 Release 后记录。
+- 当前验证：两次失败运行均在创建 Draft Release 前停止，没有留下公开的残缺版本。修复后的
+  [`v2.0.0-alpha.3`](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.3)
+  已作为普通 Release 公开并设为 latest；
+  [发布运行 30250919010](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30250919010)
+  的 preflight、无密钥 verify 和签名 release 均成功。远程下载后再次确认 APK、`.sha256`、
+  `update.json`、GitHub digest、APK 元数据和证书一致。
+
+## 未知来源授权返回后没有继续打开系统安装器
+
+- 日期：2026-07-27
+- 环境：`2.0.0-alpha.3`、Android API 36 模拟器
+- 现象：已验证更新缺少“安装未知应用”权限时，点击安装只打开系统设置；用户授权并返回后，
+  应用不会自动继续打开系统安装器。
+- 根因：安装入口使用一次性调用；旧桥接 Activity 配置了 `noHistory` 和 `Theme.NoDisplay`，
+  打开权限设置后立即结束，没有保存等待状态或处理返回结果。安装 Intent 也没有兼容回退和
+  可区分的失败结果。
+- 解决：`2.0.0-alpha.4` 候选版本使用有状态的桥接 Activity 等待权限页结果，返回后重新检查
+  权限并续接安装；通过 FileProvider 只读 `content://` URI、读权限 flag 和 `ClipData` 交给
+  系统安装器，并在 `ACTION_VIEW` 不可用时尝试 `ACTION_INSTALL_PACKAGE`。所有启动方式失败时
+  显示明确提示并保留已验证 APK。
+- 预防：单元测试覆盖权限往返续接、只读 URI 授权、安装 Intent 回退、无 READY 包和下载完成
+  Receiver 的平台权限；公开发布验收必须从上一公开版本走完整应用内更新链路，不能用
+  `adb install -r` 代替。
+- 当前验证：修复和自动化覆盖已进入 `2.0.0-alpha.4` 候选代码；该版本尚未在本文中记为公开，
+  从 `2.0.0-alpha.3` 到该版本的公开升级和实体机验收仍待实际 Release 后记录。API 36 模拟器
+  结果不能表述为 ColorOS 实体机通过。

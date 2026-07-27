@@ -5,7 +5,9 @@ import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -108,6 +110,13 @@ data class UpdateInfo(
     val sha256: String,
     val certificateSha256: String,
 )
+
+internal enum class UpdateInstallResult {
+    INSTALLER_STARTED,
+    PERMISSION_REQUIRED,
+    NOT_READY,
+    INSTALLER_UNAVAILABLE,
+}
 
 private data class UpdateVerificationSnapshot(
     val downloadId: Long,
@@ -669,8 +678,15 @@ object UpdateManager {
             val manager = context.getSystemService(DownloadManager::class.java)
             while (true) {
                 val snapshot = manager.snapshot(id)
-                if (snapshot == null || !snapshot.status.isDownloadInProgress()) {
-                    return@launch
+                when {
+                    snapshot?.status == DownloadManager.STATUS_SUCCESSFUL -> {
+                        enqueueVerification(context, id)
+                        return@launch
+                    }
+                    snapshot == null || !snapshot.status.isDownloadInProgress() -> {
+                        resumeDownload(context, id)
+                        return@launch
+                    }
                 }
                 val percent =
                     if (snapshot.totalBytes > 0L) {
@@ -813,7 +829,14 @@ object UpdateManager {
         return true
     }
 
-    fun installReadyUpdate(context: Context): Boolean {
+    @Suppress("DEPRECATION") // ACTION_INSTALL_PACKAGE remains a useful fallback on OEM installers.
+    internal fun installReadyUpdate(
+        context: Context,
+        resolveApkUri: (File) -> Uri = {
+            FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.files", it)
+        },
+        launchIntent: (Intent) -> Unit = context::startActivity,
+    ): UpdateInstallResult {
         val prefs = context.updatePreferences()
         val file = prefs.getString(KEY_PATH, null)?.let(::File)
         val versionCode = prefs.getLong(KEY_VERSION_CODE, -1L)
@@ -826,28 +849,63 @@ object UpdateManager {
                     )
                 }.isSuccess
             } == true
-        if (
+        return when {
             !prefs.getBoolean(KEY_VERIFIED, false) ||
-            !sizeValid ||
-            versionCode <= BuildConfig.VERSION_CODE
-        ) {
-            clearDownloadedUpdate(context)
-            _uiState.value = UpdateUiState(lastCheckedEpochMs = prefs.getLong(KEY_LAST_CHECKED, 0L).takeIf { it > 0L })
-            return false
+                !sizeValid ||
+                versionCode <= BuildConfig.VERSION_CODE -> {
+                clearDownloadedUpdate(context)
+                _uiState.value = UpdateUiState(lastCheckedEpochMs = prefs.getLong(KEY_LAST_CHECKED, 0L).takeIf { it > 0L })
+                UpdateInstallResult.NOT_READY
+            }
+            !context.packageManager.canRequestPackageInstalls() -> UpdateInstallResult.PERMISSION_REQUIRED
+            else -> launchPackageInstaller(requireNotNull(file), resolveApkUri, launchIntent)
         }
-        val intent =
-            if (context.packageManager.canRequestPackageInstalls()) {
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    }
+
+    private fun launchPackageInstaller(
+        file: File,
+        resolveApkUri: (File) -> Uri,
+        launchIntent: (Intent) -> Unit,
+    ): UpdateInstallResult {
+        val uri =
+            runCatching {
+                resolveApkUri(file)
+            }.getOrElse {
+                logInstallLaunchFailure("file-provider", it)
+                return UpdateInstallResult.INSTALLER_UNAVAILABLE
+            }
+        val clipData = ClipData.newRawUri("Neko Status update", uri)
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
+        val intents =
+            listOf(
                 Intent(Intent.ACTION_VIEW)
                     .setDataAndType(uri, APK_MIME_TYPE)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            } else {
-                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-        context.startActivity(intent)
-        return true
+                    .apply { this.clipData = clipData }
+                    .addFlags(flags),
+                Intent(Intent.ACTION_INSTALL_PACKAGE)
+                    .setDataAndType(uri, APK_MIME_TYPE)
+                    .apply { this.clipData = clipData }
+                    .addFlags(flags),
+            )
+        return if (launchFirstSupportedIntent(intents, launchIntent)) {
+            UpdateInstallResult.INSTALLER_STARTED
+        } else {
+            UpdateInstallResult.INSTALLER_UNAVAILABLE
+        }
     }
+
+    internal fun unknownSourceSettingsIntents(context: Context): List<Intent> =
+        listOf(
+            Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}"),
+            ),
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"),
+            ),
+            Intent(Settings.ACTION_SECURITY_SETTINGS),
+        )
 
     internal fun postInstallNotification(context: Context) {
         ensureChannel(context)
@@ -1444,6 +1502,31 @@ private fun PackageManager.getPackageInfoWithSigning(packageName: String): Packa
         getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
     }
 
+internal fun launchFirstSupportedIntent(
+    intents: Iterable<Intent>,
+    launch: (Intent) -> Unit,
+): Boolean {
+    intents.forEach { intent ->
+        try {
+            launch(intent)
+            return true
+        } catch (error: RuntimeException) {
+            logInstallLaunchFailure(intent.action.orEmpty(), error)
+        }
+    }
+    return false
+}
+
+private fun logInstallLaunchFailure(
+    action: String,
+    error: Throwable,
+) {
+    Log.w(
+        UPDATE_LOG_TAG,
+        "install-launch action=$action category=${error.diagnosticCategory()}",
+    )
+}
+
 private fun logUpdateFailure(
     stage: UpdateFailureStage,
     error: Throwable,
@@ -1453,6 +1536,7 @@ private fun logUpdateFailure(
 
 private fun Throwable.diagnosticCategory(): String =
     when (this) {
+        is ActivityNotFoundException -> "activity-not-found"
         is IOException -> "io"
         is SecurityException -> "security"
         is IllegalArgumentException -> "invalid-data"
