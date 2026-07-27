@@ -16,16 +16,25 @@ APK 上限为 250 MiB，且必须通过 SHA-256、包名、真实 `versionCode`/
 
 ## CI 发布顺序
 
-1. 创建并推送与 `versionName` 一致的 `v<versionName>` tag。
-2. CI 执行格式、静态分析、Lint、单测和 Debug 构建门禁。
-3. 从 GitHub Secrets 恢复临时 Release Keystore，构建并用 `apksigner` 验证 APK。
-4. 从 Gradle `output-metadata.json` 提取版本，并使用 `aapt2` 与 APK 的真实包名和版本交叉校验，
+1. 候选提交先合入受保护的默认分支，并等待 Verify Android 通过。
+2. 创建并推送与 `versionName` 一致的 `v<versionName>` tag；tag 指向的提交必须是默认分支祖先。
+3. 从默认分支手动运行 Publish signed Android release，输入已存在的 tag。发布工作流不响应 tag push，
+   也拒绝从默认分支以外的 ref 调度。
+4. 无 Secret 的 preflight 先验证 tag 格式、存在性、不可变 commit SHA 和默认分支祖先关系，再由独立
+   Verify job 执行 Wrapper 校验、格式、静态分析、Lint、单测和 Debug 构建门禁。
+5. 门禁成功后才进入 `release` Environment。从 GitHub Secrets 恢复临时 Release Keystore，仅在
+   签名步骤作用域内提供口令，构建完成后立即删除 Keystore。
+6. 从 Gradle `output-metadata.json` 提取版本，并使用 `aapt2` 与 APK 的真实包名和版本交叉校验，
    不在工作流中硬编码 `versionCode`。
-5. 生成 SHA-256、证书摘要和 `update.json`，并与公开官方证书指纹比对。
-6. 先创建含全部附件的 Draft Release；附件成功后才发布并设为 latest。
+7. 校验 APK 为 1 字节至 250 MiB，生成 SHA-256、证书摘要和 `update.json`，按公开 Schema 的字段、
+   长度和正则约束自检，并与公开官方证书指纹比对。
+8. 先创建 Draft Release，再上传并核对全部附件，最后发布并设为 latest。失败重跑可对同 tag 的
+   Draft 使用 `--clobber` 恢复；如果同 tag Release 已经公开则拒绝覆盖。
 
 第三方 Actions 固定到完整 commit SHA，Dependabot 通过 PR 提议升级；签名工作流不得引用
-可移动的 major tag。
+可移动的 major tag。Gradle Wrapper 同时通过官方 Wrapper Validation 和 8.11.1 精确 JAR
+SHA-256 校验；`distributionSha256Sum` 固定 Gradle 分发 ZIP。升级 Gradle 时必须使用可信的官方
+Wrapper 生成器，同时更新并复核两项指纹。
 
 客户端使用 GitHub 的 `/repos/{owner}/{repository}/releases/latest` 接口，而该接口不会返回
 标记为 prerelease 的版本。因此即使版本名包含 `alpha` 或 `beta`，需要被客户端发现的版本也
@@ -33,12 +42,19 @@ APK 上限为 250 MiB，且必须通过 SHA-256、包名、真实 `versionCode`/
 
 需要的 GitHub Actions Secrets：`NEKO_KEYSTORE_BASE64`、`NEKO_KEYSTORE_PASSWORD`、
 `NEKO_KEY_ALIAS`、`NEKO_KEY_PASSWORD`。工作流使用 `release` Environment；长期私钥应离线
-备份，绝不能写入仓库、Actions 日志或构建附件。
+备份，绝不能写入仓库、Actions 日志或构建附件。`GH_TOKEN` 只注入最终发布步骤，签名口令只
+注入 Keystore 校验和签名构建步骤。
 
-首次创建仓库时，应确认仓库可见性为 Public、默认分支为 `main`、Actions 对工作流具有
-`contents: write` 权限，并创建名为 `release` 的 Environment。四项签名 Secret 应配置在该
-Environment 中，同时启用 Private vulnerability reporting；推送首个版本 tag 前先确认默认
-分支的 Verify Android 工作流通过。
+首次创建仓库时，应确认仓库可见性为 Public、默认分支为 `main`，仓库默认 Actions 权限保持只读；
+只有 Release job 声明 `contents: write`。创建名为 `release` 的 Environment，将四项签名 Secret
+配置在其中，并设置可信 Required reviewer、禁止管理员绕过。由于工作流只从默认分支手动调度，
+Environment 的 Deployment policy 应只允许受保护的默认分支（而不是 tag ref）。仓库还应启用
+匹配 `refs/tags/v*` 的 Active Tag ruleset，限制创建、更新和删除，只允许专用发布维护者或团队
+旁路；同时启用 Private vulnerability reporting。
+
+Gradle 依赖校验元数据尚未启用。后续应在依赖集合稳定后生成并审查
+`gradle/verification-metadata.xml`，以 strict dependency verification 保护签名构建；不要在
+未审查大量自动生成校验值时直接启用。
 
 ## 真机发布门禁
 

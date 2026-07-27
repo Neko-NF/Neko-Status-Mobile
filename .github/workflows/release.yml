@@ -1,9 +1,6 @@
 name: Publish signed Android release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -12,50 +9,159 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: android-release
+  group: android-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+      release_sha: ${{ steps.validate.outputs.release_sha }}
+    steps:
+      - name: Require the default branch workflow
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$WORKFLOW_REF" = "refs/heads/$DEFAULT_BRANCH" || {
+            echo "Release workflow must be dispatched from the default branch" >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and commit
+        id: validate
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ${#RELEASE_TAG} -gt 81 ]] ||
+             [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Release tag must be v<major>.<minor>.<patch> with an optional prerelease suffix" >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || {
+            echo "Release tag $RELEASE_TAG does not exist" >&2
+            exit 1
+          }
+          release_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git fetch --no-tags origin \
+            "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$release_sha" "refs/remotes/origin/$DEFAULT_BRANCH" || {
+            echo "Release tag $RELEASE_TAG is not an ancestor of origin/$DEFAULT_BRANCH" >&2
+            exit 1
+          }
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
-    env:
-      NEKO_KEYSTORE_PATH: ${{ github.workspace }}/release.jks
-      NEKO_KEYSTORE_PASSWORD: ${{ secrets.NEKO_KEYSTORE_PASSWORD }}
-      NEKO_KEY_ALIAS: ${{ secrets.NEKO_KEY_ALIAS }}
-      NEKO_KEY_PASSWORD: ${{ secrets.NEKO_KEY_PASSWORD }}
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ env.RELEASE_TAG }}
-          fetch-depth: 0
-      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Verify Gradle 8.11.1 wrapper fingerprint
+        run: |
+          echo "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046  gradle/wrapper/gradle-wrapper.jar" |
+            sha256sum --check --strict
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2 # v5
 
-      - name: Validate signing secrets
-        env:
-          NEKO_KEYSTORE_BASE64: ${{ secrets.NEKO_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          for value in "$NEKO_KEYSTORE_BASE64" "$NEKO_KEYSTORE_PASSWORD" "$NEKO_KEY_ALIAS" "$NEKO_KEY_PASSWORD"; do
-            test -n "$value" || { echo "A release signing secret is missing" >&2; exit 1; }
-          done
-          printf '%s' "$NEKO_KEYSTORE_BASE64" | base64 --decode > "$NEKO_KEYSTORE_PATH"
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
 
       - name: Verify project
         run: ./gradlew ktlintCheck detekt lintDebug testDebugUnitTest assembleDebug --no-daemon --console=plain
 
+  release:
+    needs: [preflight, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Verify Gradle 8.11.1 wrapper fingerprint
+        run: |
+          echo "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046  gradle/wrapper/gradle-wrapper.jar" |
+            sha256sum --check --strict
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Validate signing secrets
+        env:
+          NEKO_KEYSTORE_BASE64: ${{ secrets.NEKO_KEYSTORE_BASE64 }}
+          NEKO_KEYSTORE_PASSWORD: ${{ secrets.NEKO_KEYSTORE_PASSWORD }}
+          NEKO_KEY_ALIAS: ${{ secrets.NEKO_KEY_ALIAS }}
+          NEKO_KEY_PASSWORD: ${{ secrets.NEKO_KEY_PASSWORD }}
+          NEKO_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+        run: |
+          set -euo pipefail
+          for value in "$NEKO_KEYSTORE_BASE64" "$NEKO_KEYSTORE_PASSWORD" "$NEKO_KEY_ALIAS" "$NEKO_KEY_PASSWORD"; do
+            test -n "$value" || {
+              echo "A release signing secret is missing" >&2
+              exit 1
+            }
+          done
+          umask 077
+          printf '%s' "$NEKO_KEYSTORE_BASE64" | base64 --decode > "$NEKO_KEYSTORE_PATH"
+          test -s "$NEKO_KEYSTORE_PATH" || {
+            echo "Decoded release keystore is empty" >&2
+            exit 1
+          }
+
       - name: Build signed APK
+        env:
+          NEKO_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          NEKO_KEYSTORE_PASSWORD: ${{ secrets.NEKO_KEYSTORE_PASSWORD }}
+          NEKO_KEY_ALIAS: ${{ secrets.NEKO_KEY_ALIAS }}
+          NEKO_KEY_PASSWORD: ${{ secrets.NEKO_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon --console=plain
+
+      - name: Remove signing material
+        if: always()
+        env:
+          NEKO_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+        run: rm -f -- "$NEKO_KEYSTORE_PATH"
 
       - name: Verify metadata and build update manifest
         shell: pwsh
@@ -67,7 +173,11 @@ jobs:
           $versionName = [string]$element.versionName
           $versionCode = [long]$element.versionCode
           $packageName = [string]$metadata.applicationId
-          if ([string]::IsNullOrWhiteSpace($versionName) -or $versionCode -le 0) {
+          if (
+            [string]::IsNullOrWhiteSpace($versionName) -or
+            $versionName.Length -gt 80 -or
+            $versionCode -le 0
+          ) {
             throw 'Release metadata contains an invalid version'
           }
           if ($packageName -ne 'com.nekonf.nekostatus') {
@@ -80,16 +190,27 @@ jobs:
           $sourceApk = Join-Path 'app/build/outputs/apk/release' $element.outputFile
           if (-not (Test-Path $sourceApk -PathType Leaf)) { throw 'Release APK is missing' }
           $apkName = "neko-status-$versionName-universal.apk"
+          if ($apkName.Length -gt 160 -or $apkName -notmatch '^[A-Za-z0-9._-]+\.apk$') {
+            throw 'Generated APK asset name violates the update manifest contract'
+          }
           Copy-Item $sourceApk $apkName
-          $buildTools = Get-ChildItem "$env:ANDROID_HOME/build-tools" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $apkSize = (Get-Item $apkName).Length
+          if ($apkSize -lt 1 -or $apkSize -gt 262144000L) {
+            throw 'Release APK must be between 1 byte and 250 MiB'
+          }
+
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME/build-tools" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
           if (-not $buildTools) { throw 'Android build tools are missing' }
           $apkSigner = Join-Path $buildTools.FullName 'apksigner'
           $aapt2 = Join-Path $buildTools.FullName 'aapt2'
           if (-not (Test-Path $apkSigner -PathType Leaf)) { throw 'apksigner is missing' }
           if (-not (Test-Path $aapt2 -PathType Leaf)) { throw 'aapt2 is missing' }
 
-          $badgingOutput = & $aapt2 dump badging $apkName
-          if ($LASTEXITCODE -ne 0) { throw 'aapt2 could not inspect the APK' }
+          $badgingOutput = @(& $aapt2 dump badging $apkName)
+          $aaptExitCode = $LASTEXITCODE
+          if ($aaptExitCode -ne 0) { throw 'aapt2 could not inspect the APK' }
           $packageLine = $badgingOutput | Select-Object -First 1
           if ($packageLine -notmatch "^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)' ") {
             throw 'Could not read package metadata from the APK'
@@ -101,14 +222,39 @@ jobs:
             throw 'APK package metadata does not match Gradle output metadata'
           }
 
-          & $apkSigner verify --verbose --print-certs $apkName | Tee-Object -Variable verifyOutput
-          if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed' }
+          $verifyOutput = @(& $apkSigner verify --verbose --print-certs $apkName)
+          $apkSignerExitCode = $LASTEXITCODE
+          if ($apkSignerExitCode -ne 0) { throw 'APK signature verification failed' }
 
-          $certificateLine = $verifyOutput | Where-Object { $_ -match 'certificate SHA-256 digest:' } | Select-Object -First 1
-          if (-not $certificateLine) { throw 'Could not read signing certificate digest' }
-          $certificate = (($certificateLine -split ':', 2)[1] -replace ':', '').Trim().ToLowerInvariant()
-          $expectedCertificate = ((Get-Content gradle.properties | Where-Object { $_ -like 'neko.officialCertificateSha256=*' }) -split '=', 2)[1].Trim().ToLowerInvariant()
-          if ($certificate -notmatch '^[0-9a-f]{64}$' -or $certificate -ne $expectedCertificate) {
+          $certificatePattern = '^[^\r\n]*certificate SHA-256 digest:\s*([0-9A-Fa-f]{64})\s*$'
+          $certificateMatches = @(
+            foreach ($line in $verifyOutput) {
+              if ([string]$line -match $certificatePattern) {
+                $Matches[1].ToLowerInvariant()
+              }
+            }
+          )
+          $certificateDigests = @($certificateMatches | Sort-Object -Unique)
+          if ($certificateDigests.Count -eq 0) {
+            throw 'Could not read signing certificate digest'
+          }
+          if ($certificateDigests.Count -ne 1) {
+            throw 'Release APK must contain exactly one unique signing certificate'
+          }
+          $certificate = [string]$certificateDigests[0]
+          $certificateProperties = @(
+            Get-Content gradle.properties |
+              Where-Object { $_ -like 'neko.officialCertificateSha256=*' }
+          )
+          if ($certificateProperties.Count -ne 1) {
+            throw 'gradle.properties must contain exactly one official certificate fingerprint'
+          }
+          $expectedCertificate = (($certificateProperties[0] -split '=', 2)[1]).Trim().ToLowerInvariant()
+          if (
+            $certificate -notmatch '^[0-9a-f]{64}$' -or
+            $expectedCertificate -notmatch '^[0-9a-f]{64}$' -or
+            $certificate -ne $expectedCertificate
+          ) {
             throw 'APK certificate does not match the public official certificate fingerprint'
           }
 
@@ -124,35 +270,84 @@ jobs:
           } | ConvertTo-Json | Set-Content update.json -Encoding utf8NoBOM
 
           $manifest = Get-Content update.json -Raw | ConvertFrom-Json
+          $expectedProperties = @(
+            'version',
+            'versionCode',
+            'packageName',
+            'sha256',
+            'apkAsset',
+            'certificateSha256'
+          )
+          $actualProperties = @($manifest.PSObject.Properties.Name)
+          if (@(Compare-Object $expectedProperties $actualProperties).Count -ne 0) {
+            throw 'Generated update manifest contains unexpected or missing properties'
+          }
           if (
+            $manifest.version -isnot [string] -or
+            $manifest.version.Length -lt 1 -or
+            $manifest.version.Length -gt 80 -or
+            [long]$manifest.versionCode -lt 1 -or
+            $manifest.packageName -ne 'com.nekonf.nekostatus' -or
+            $manifest.sha256 -notmatch '^[0-9a-f]{64}$' -or
+            $manifest.apkAsset.Length -gt 160 -or
+            $manifest.apkAsset -notmatch '^[A-Za-z0-9._-]+\.apk$' -or
+            $manifest.certificateSha256 -notmatch '^[0-9a-f]{64}$' -or
             $manifest.version -ne $versionName -or
             [long]$manifest.versionCode -ne $versionCode -or
-            $manifest.packageName -ne $packageName -or
             $manifest.apkAsset -ne $apkName -or
             $manifest.sha256 -ne $sha -or
             $manifest.certificateSha256 -ne $certificate
           ) {
-            throw 'Generated update manifest failed its self-check'
+            throw 'Generated update manifest violates its schema or failed its self-check'
           }
           "APK_NAME=$apkName" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "VERSION_NAME=$versionName" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Create draft release with all assets
+      - name: Create or resume draft release, verify assets, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists" >&2
-            exit 1
-          fi
-          gh release create "$RELEASE_TAG" \
-            "$APK_NAME" "$APK_NAME.sha256" update.json \
-            --verify-tag --draft --title "Neko Status $VERSION_NAME" --generate-notes
 
-          uploaded_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
-          for asset in "$APK_NAME" "$APK_NAME.sha256" update.json; do
-            grep -Fqx "$asset" <<<"$uploaded_assets" || {
-              echo "Draft release is missing asset $asset" >&2
+          git fetch --force --tags origin
+          current_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$current_sha" = "$RELEASE_SHA" || {
+            echo "Release tag moved after preflight validation" >&2
+            exit 1
+          }
+
+          if release_state="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            test "$release_state" = "true" || {
+              echo "Release $RELEASE_TAG is already public" >&2
               exit 1
             }
-          done
+            echo "Resuming existing draft release $RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --title "Neko Status $VERSION_NAME" \
+              --generate-notes
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "$APK_NAME" "$APK_NAME.sha256" update.json \
+            --clobber
+
+          expected_assets="$(
+            printf '%s\n' "$APK_NAME" "$APK_NAME.sha256" update.json |
+              LC_ALL=C sort
+          )"
+          uploaded_assets="$(
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' |
+              LC_ALL=C sort
+          )"
+          test "$uploaded_assets" = "$expected_assets" || {
+            echo "Draft release assets do not exactly match the three required files" >&2
+            exit 1
+          }
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = "true" || {
+            echo "Release changed state before publication" >&2
+            exit 1
+          }
           gh release edit "$RELEASE_TAG" --draft=false --latest
