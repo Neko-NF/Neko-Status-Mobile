@@ -2,6 +2,15 @@
 
 package com.nekonf.nekostatus.feature.settings
 
+import android.Manifest
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -59,6 +68,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -70,18 +80,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nekonf.nekostatus.core.designsystem.NekoPanel
 import com.nekonf.nekostatus.core.designsystem.PrimaryAction
 import com.nekonf.nekostatus.core.designsystem.SectionHeader
 import com.nekonf.nekostatus.core.designsystem.SettingsRow
 import com.nekonf.nekostatus.core.model.ReportingSettings
 import com.nekonf.nekostatus.core.model.ServerConfig
+import com.nekonf.nekostatus.core.model.UpdateFailureStage
 import com.nekonf.nekostatus.core.model.UpdateSettings
 import com.nekonf.nekostatus.core.model.UpdateSource
 import com.nekonf.nekostatus.core.model.UpdateStatus
@@ -109,6 +129,24 @@ enum class SettingsDestination {
     DIAGNOSTICS,
     ABOUT,
 }
+
+internal object UpdatePageTestTags {
+    const val ROOT = "update_page"
+    const val AUTO_CHECK = "update_auto_check"
+    const val AUTO_DOWNLOAD = "update_auto_download"
+    const val SOURCE_SELECTOR = "update_source_selector"
+    const val SOURCE_OFFICIAL = "update_source_official"
+    const val SOURCE_CUSTOM = "update_source_custom"
+    const val REPOSITORY_INPUT = "update_repository_input"
+    const val REPOSITORY_SAVE = "update_repository_save"
+    const val NOTIFICATION_SETTINGS = "update_notification_settings"
+    const val STATUS = "update_status"
+    const val MAIN_ACTION = "update_main_action"
+    const val CHECK_AGAIN = "update_check_again"
+    const val VIEW_RELEASE = "update_view_release"
+}
+
+private const val UPDATE_NOTIFICATION_CHANNEL = "neko-status-updates"
 
 @Composable
 fun SettingsScreen(
@@ -1340,12 +1378,14 @@ private fun WidgetDeviceStatus.previewStatusLabel(): Int =
     }
 
 @Composable
+@Suppress("LongParameterList")
 private fun SettingsSwitchRow(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     supporting: String? = null,
     enabled: Boolean = true,
+    testTag: String? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
@@ -1356,7 +1396,12 @@ private fun SettingsSwitchRow(
             Text(title, style = MaterialTheme.typography.titleMedium)
             supporting?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
+        )
     }
 }
 
@@ -1445,17 +1490,39 @@ private fun UpdatePage(
     onInstall: () -> Unit,
     modifier: Modifier,
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var selectedSource by rememberSaveable(settings.source) { mutableStateOf(settings.source) }
     var repositoryDraft by rememberSaveable(settings.customRepository) { mutableStateOf(settings.customRepository) }
     var repositoryTouched by rememberSaveable(settings.customRepository) { mutableStateOf(false) }
     var repositorySaveResult by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var notificationsEnabled by remember(context) { mutableStateOf(areUpdateNotificationsEnabled(context)) }
+    val notificationSettingsLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            notificationsEnabled = areUpdateNotificationsEnabled(context)
+        }
+    DisposableEffect(context, lifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    notificationsEnabled = areUpdateNotificationsEnabled(context)
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val normalizedRepository = remember(repositoryDraft) { normalizeGitHubRepository(repositoryDraft) }
     val sourceReady =
         selectedSource == settings.source &&
             (selectedSource == UpdateSource.OFFICIAL || normalizedRepository == settings.customRepository)
 
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 18.dp),
+        modifier =
+            modifier
+                .fillMaxSize()
+                .semantics { testTagsAsResourceId = true }
+                .testTag(UpdatePageTestTags.ROOT)
+                .padding(horizontal = 18.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 18.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -1480,13 +1547,57 @@ private fun UpdatePage(
                     supporting = stringResource(R.string.settings_update_auto_check_support),
                     checked = settings.automaticChecks,
                     onCheckedChange = onAutomaticChecksChange,
+                    testTag = UpdatePageTestTags.AUTO_CHECK,
                 )
                 SettingsSwitchRow(
                     title = stringResource(R.string.settings_update_auto_download),
                     supporting = stringResource(R.string.settings_update_auto_download_support),
                     checked = settings.automaticDownload,
                     onCheckedChange = onAutomaticDownloadChange,
+                    testTag = UpdatePageTestTags.AUTO_DOWNLOAD,
                 )
+            }
+        }
+        if (!notificationsEnabled) {
+            item {
+                NekoPanel(Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Notifications,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.settings_update_notifications_disabled),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                stringResource(R.string.settings_update_notifications_disabled_support),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            notificationSettingsLauncher.launch(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                            )
+                        },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag(UpdatePageTestTags.NOTIFICATION_SETTINGS),
+                    ) {
+                        Text(stringResource(R.string.settings_update_open_notification_settings))
+                    }
+                }
             }
         }
         item {
@@ -1496,7 +1607,11 @@ private fun UpdatePage(
             )
         }
         item {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            SingleChoiceSegmentedButtonRow(
+                Modifier
+                    .fillMaxWidth()
+                    .testTag(UpdatePageTestTags.SOURCE_SELECTOR),
+            ) {
                 UpdateSource.entries.forEachIndexed { index, source ->
                     SegmentedButton(
                         selected = selectedSource == source,
@@ -1507,6 +1622,14 @@ private fun UpdatePage(
                             onSelectSource(source)
                         },
                         shape = SegmentedButtonDefaults.itemShape(index, UpdateSource.entries.size),
+                        modifier =
+                            Modifier.testTag(
+                                if (source == UpdateSource.OFFICIAL) {
+                                    UpdatePageTestTags.SOURCE_OFFICIAL
+                                } else {
+                                    UpdatePageTestTags.SOURCE_CUSTOM
+                                },
+                            ),
                     ) {
                         Text(
                             stringResource(
@@ -1539,7 +1662,10 @@ private fun UpdatePage(
                             repositoryTouched = true
                             repositorySaveResult = null
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag(UpdatePageTestTags.REPOSITORY_INPUT),
                         label = { Text(stringResource(R.string.settings_update_custom_repository)) },
                         placeholder = { Text(UpdateSettings.OFFICIAL_REPOSITORY) },
                         singleLine = true,
@@ -1563,7 +1689,10 @@ private fun UpdatePage(
                             onSaveCustomRepository(repositoryDraft) { repositorySaveResult = it }
                         },
                         enabled = repositoryDraft.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag(UpdatePageTestTags.REPOSITORY_SAVE),
                     ) {
                         Text(stringResource(R.string.settings_update_custom_repository_save))
                     }
@@ -1585,6 +1714,7 @@ private fun UpdatePage(
                                     MaterialTheme.colorScheme.error
                                 },
                             style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                         )
                     }
                     Spacer(Modifier.height(8.dp))
@@ -1600,7 +1730,7 @@ private fun UpdatePage(
             SectionHeader(stringResource(R.string.settings_update_status))
         }
         item {
-            UpdateStatusPanel(updateState)
+            UpdateStatusPanel(updateState, Modifier.testTag(UpdatePageTestTags.STATUS))
         }
         if (updateState.status == UpdateStatus.AVAILABLE && !updateState.message.isNullOrBlank()) {
             item {
@@ -1630,13 +1760,16 @@ private fun UpdatePage(
 }
 
 @Composable
-private fun UpdateStatusPanel(state: UpdateUiState) {
-    NekoPanel(Modifier.fillMaxWidth()) {
+private fun UpdateStatusPanel(
+    state: UpdateUiState,
+    modifier: Modifier = Modifier,
+) {
+    NekoPanel(modifier.fillMaxWidth()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (state.status == UpdateStatus.CHECKING || state.status == UpdateStatus.DOWNLOADING) {
+            if (state.showsIndeterminateProgress()) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
             } else {
                 Icon(
@@ -1657,7 +1790,11 @@ private fun UpdateStatusPanel(state: UpdateUiState) {
                 )
             }
             Column(Modifier.weight(1f)) {
-                Text(updateStatusTitle(state), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    updateStatusTitle(state),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
                 Text(
                     updateStatusSupportingText(state),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1679,6 +1816,16 @@ private fun UpdateStatusPanel(state: UpdateUiState) {
     }
 }
 
+private fun UpdateUiState.showsIndeterminateProgress(): Boolean =
+    isRefreshing ||
+        when (status) {
+            UpdateStatus.CHECKING,
+            UpdateStatus.DOWNLOADING,
+            UpdateStatus.VERIFYING,
+            -> true
+            else -> false
+        }
+
 @Composable
 private fun updateStatusTitle(state: UpdateUiState): String =
     when (state.status) {
@@ -1695,16 +1842,25 @@ private fun updateStatusTitle(state: UpdateUiState): String =
                 R.string.settings_update_status_downloading,
                 state.version ?: stringResource(R.string.settings_update_unknown_version),
             )
+        UpdateStatus.VERIFYING -> stringResource(R.string.settings_update_status_verifying)
         UpdateStatus.READY ->
             stringResource(
                 R.string.settings_update_status_ready,
                 state.version ?: stringResource(R.string.settings_update_unknown_version),
             )
-        UpdateStatus.ERROR -> stringResource(R.string.settings_update_status_error)
+        UpdateStatus.ERROR -> stringResource(updateErrorTitleResource(state.failureStage))
     }
 
 @Composable
 private fun updateStatusSupportingText(state: UpdateUiState): String =
+    if (state.isRefreshing && state.status != UpdateStatus.CHECKING) {
+        stringResource(R.string.settings_update_status_checking_support)
+    } else {
+        updateStatusSupportingTextForStatus(state)
+    }
+
+@Composable
+private fun updateStatusSupportingTextForStatus(state: UpdateUiState): String =
     when (state.status) {
         UpdateStatus.IDLE -> stringResource(R.string.settings_update_status_idle_support)
         UpdateStatus.CHECKING -> stringResource(R.string.settings_update_status_checking_support)
@@ -1714,10 +1870,25 @@ private fun updateStatusSupportingText(state: UpdateUiState): String =
             state.downloadProgressPercent?.let {
                 stringResource(R.string.settings_update_download_progress, it.coerceIn(0, 100))
             } ?: stringResource(R.string.settings_update_status_downloading_support)
+        UpdateStatus.VERIFYING -> stringResource(R.string.settings_update_status_verifying_support)
         UpdateStatus.READY -> stringResource(R.string.settings_update_status_ready_support)
-        UpdateStatus.ERROR ->
-            state.message?.takeIf(String::isNotBlank)
-                ?: stringResource(R.string.settings_update_status_error_support)
+        UpdateStatus.ERROR -> stringResource(updateErrorSupportingResource(state.failureStage))
+    }
+
+internal fun updateErrorTitleResource(stage: UpdateFailureStage?): Int =
+    when (stage) {
+        UpdateFailureStage.CHECK -> R.string.settings_update_status_error_check
+        UpdateFailureStage.DOWNLOAD -> R.string.settings_update_status_error_download
+        UpdateFailureStage.VERIFY -> R.string.settings_update_status_error_verify
+        null -> R.string.settings_update_status_error
+    }
+
+internal fun updateErrorSupportingResource(stage: UpdateFailureStage?): Int =
+    when (stage) {
+        UpdateFailureStage.CHECK -> R.string.settings_update_status_error_check_support
+        UpdateFailureStage.DOWNLOAD -> R.string.settings_update_status_error_download_support
+        UpdateFailureStage.VERIFY -> R.string.settings_update_status_error_verify_support
+        null -> R.string.settings_update_status_error_support
     }
 
 @Composable
@@ -1742,6 +1913,7 @@ private fun UpdateActions(
                 PrimaryAction(
                     text = stringResource(R.string.settings_update_status_checking),
                     onClick = onCheck,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
                     enabled = false,
                     icon = Icons.Rounded.Refresh,
                 )
@@ -1749,26 +1921,37 @@ private fun UpdateActions(
                 PrimaryAction(
                     text = stringResource(R.string.settings_update_download),
                     onClick = onDownload,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
                     enabled = enabled,
                     icon = Icons.Rounded.SystemUpdate,
                 )
-                CheckAgainButton(onCheck, enabled)
+                CheckAgainButton(onCheck, enabled, state.isRefreshing)
             }
             UpdateStatus.DOWNLOADING ->
                 PrimaryAction(
                     text = stringResource(R.string.settings_update_downloading),
                     onClick = onDownload,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
                     enabled = false,
                     icon = Icons.Rounded.SystemUpdate,
+                )
+            UpdateStatus.VERIFYING ->
+                PrimaryAction(
+                    text = stringResource(R.string.settings_update_verifying),
+                    onClick = onDownload,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
+                    enabled = false,
+                    icon = Icons.Rounded.Security,
                 )
             UpdateStatus.READY -> {
                 PrimaryAction(
                     text = stringResource(R.string.settings_update_install),
                     onClick = onInstall,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
                     enabled = enabled,
                     icon = Icons.Rounded.Security,
                 )
-                CheckAgainButton(onCheck, enabled)
+                CheckAgainButton(onCheck, enabled, state.isRefreshing)
             }
             else ->
                 PrimaryAction(
@@ -1781,6 +1964,7 @@ private fun UpdateActions(
                             },
                         ),
                     onClick = onCheck,
+                    modifier = Modifier.testTag(UpdatePageTestTags.MAIN_ACTION),
                     enabled = enabled,
                     icon = Icons.Rounded.Refresh,
                 )
@@ -1788,7 +1972,10 @@ private fun UpdateActions(
         state.releaseUrl?.let { releaseUrl ->
             OutlinedButton(
                 onClick = { runCatching { uriHandler.openUri(releaseUrl) } },
-                modifier = Modifier.fillMaxWidth(),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag(UpdatePageTestTags.VIEW_RELEASE),
             ) {
                 Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -1802,12 +1989,47 @@ private fun UpdateActions(
 private fun CheckAgainButton(
     onCheck: () -> Unit,
     enabled: Boolean,
+    refreshing: Boolean,
 ) {
-    OutlinedButton(onClick = onCheck, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-        Icon(Icons.Rounded.Refresh, contentDescription = null)
+    OutlinedButton(
+        onClick = onCheck,
+        enabled = enabled && !refreshing,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag(UpdatePageTestTags.CHECK_AGAIN),
+    ) {
+        if (refreshing) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(Icons.Rounded.Refresh, contentDescription = null)
+        }
         Spacer(Modifier.width(8.dp))
-        Text(stringResource(R.string.settings_update_check_again))
+        Text(
+            stringResource(
+                if (refreshing) {
+                    R.string.settings_update_status_checking
+                } else {
+                    R.string.settings_update_check_again
+                },
+            ),
+        )
     }
+}
+
+private fun areUpdateNotificationsEnabled(context: Context): Boolean {
+    val notificationManager = context.getSystemService(NotificationManager::class.java)
+    val permissionGranted =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    val updateChannelEnabled =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            notificationManager.getNotificationChannel(UPDATE_NOTIFICATION_CHANNEL)?.importance !=
+            NotificationManager.IMPORTANCE_NONE
+    return notificationManager.areNotificationsEnabled() && permissionGranted && updateChannelEnabled
 }
 
 @Composable

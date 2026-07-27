@@ -47,3 +47,13 @@
 - 根因：版本目录已有 `kotlinx-coroutines-test`，但 `:core:network` 未加入测试依赖。
 - 解决：增加 `testImplementation(libs.kotlinx.coroutines.test)`。
 - 预防：新增 suspend 契约测试时同时检查测试 source set 的协程依赖。
+
+## Linux Release 元数据脚本误判有效 APK
+
+- 日期：2026-07-27
+- 环境：GitHub-hosted Ubuntu Runner、PowerShell 7、Android Build Tools
+- 现象：正式 APK 构建和签名成功，但元数据门禁先后报告 `aapt2 could not inspect the APK` 和官方证书指纹不匹配；两个任务都在创建 Draft Release 前停止。
+- 根因：把原生命令直接管道到 `Select-Object -First 1` 会提前关闭下游管道，使 Linux `aapt2` 以非零状态退出；同时，`apksigner` 新版输出以 `V3.0 Signer:` 开头，按第一个冒号分割会截取到错误字段。
+- 解决：先完整捕获原生命令输出和退出码，再在内存中选取需要的行；证书使用严格正则捕获 64 位 SHA-256，并要求唯一证书集合恰好为一个。
+- 预防：发布工作流必须先生成 Draft、精确核对三个资产后再公开；本地用真实 APK 验证 `aapt2` 完整输出和 `apksigner` 多行格式，不能只对伪造单行做解析测试。
+- 当前验证：`actionlint .github/workflows/release.yml` 与本地正式 APK 元数据检查通过；两次失败运行均在创建 Draft Release 前停止，修复后的完整发布结果将在首个公开 Release 后记录。

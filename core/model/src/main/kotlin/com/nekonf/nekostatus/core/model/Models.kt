@@ -226,8 +226,16 @@ enum class UpdateStatus {
     LATEST,
     AVAILABLE,
     DOWNLOADING,
+    VERIFYING,
     READY,
     ERROR,
+}
+
+@Serializable
+enum class UpdateFailureStage {
+    CHECK,
+    DOWNLOAD,
+    VERIFY,
 }
 
 @Serializable
@@ -238,6 +246,8 @@ data class UpdateUiState(
     val message: String? = null,
     val lastCheckedEpochMs: Long? = null,
     val downloadProgressPercent: Int? = null,
+    val failureStage: UpdateFailureStage? = null,
+    val isRefreshing: Boolean = false,
 )
 
 fun normalizeGitHubRepository(value: String): String? {

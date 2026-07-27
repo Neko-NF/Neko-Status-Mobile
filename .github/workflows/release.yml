@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ inputs.tag }}
+  group: android-release
   cancel-in-progress: false
 
 jobs:

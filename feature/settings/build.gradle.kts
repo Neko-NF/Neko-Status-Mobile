@@ -24,8 +24,11 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
     implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+    testImplementation(libs.junit)
 }

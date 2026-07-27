@@ -1,5 +1,6 @@
 package com.nekonf.nekostatus
 
+import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.database.Cursor
@@ -14,6 +16,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import androidx.work.BackoffPolicy
@@ -23,11 +26,13 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.nekonf.nekostatus.core.data.SettingsRepository
+import com.nekonf.nekostatus.core.model.UpdateFailureStage
 import com.nekonf.nekostatus.core.model.UpdateSettings
 import com.nekonf.nekostatus.core.model.UpdateStatus
 import com.nekonf.nekostatus.core.model.UpdateUiState
@@ -44,6 +49,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -58,6 +64,7 @@ import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -100,6 +107,18 @@ data class UpdateInfo(
     val releaseNotes: String?,
     val sha256: String,
     val certificateSha256: String,
+)
+
+private data class UpdateVerificationSnapshot(
+    val downloadId: Long,
+    val file: File,
+    val expectedSizeBytes: Long,
+    val sha256: String,
+    val certificateSha256: String,
+    val packageName: String,
+    val version: String,
+    val versionCode: Long,
+    val repository: String,
 )
 
 internal class GitHubUpdateClient(
@@ -183,9 +202,10 @@ internal class GitHubUpdateClient(
     }
 }
 
-@Suppress("TooManyFunctions")
+@Suppress("LargeClass", "TooManyFunctions")
 object UpdateManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val operationCallbackExecutor = Executor { command -> command.run() }
     private val checkMutex = Mutex()
     private val verificationMutex = Mutex()
     private val client = GitHubUpdateClient()
@@ -211,37 +231,111 @@ object UpdateManager {
                         expectedBytes = prefs.getLong(KEY_SIZE, -1L),
                     )
                 }.isSuccess
-        val ready =
-            verified &&
-                readySizeValid &&
-                readyVersionCode > BuildConfig.VERSION_CODE
-        if (ready) {
-            _uiState.value =
-                UpdateUiState(
-                    status = UpdateStatus.READY,
-                    version = prefs.getString(KEY_VERSION, null),
-                    releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
-                    lastCheckedEpochMs = checkedAt,
-                    downloadProgressPercent = 100,
-                )
-            return
-        }
-
         val downloadId = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        if (!verified && downloadId >= 0L && readyVersionCode > BuildConfig.VERSION_CODE) {
-            _uiState.value =
-                UpdateUiState(
-                    status = UpdateStatus.DOWNLOADING,
-                    version = prefs.getString(KEY_VERSION, null),
-                    releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
-                    lastCheckedEpochMs = checkedAt,
-                )
-            resumeDownload(context.applicationContext, downloadId)
-            return
+        when (
+            resolveRestoredUpdateStatus(
+                verified = verified,
+                readyFileValid = readySizeValid,
+                storedVersionCode = readyVersionCode,
+                installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+                downloadId = downloadId,
+                verificationEnqueued = prefs.getBoolean(KEY_VERIFYING, false),
+            )
+        ) {
+            UpdateStatus.READY -> {
+                publishReadyState(prefs, checkedAt)
+                return
+            }
+            UpdateStatus.VERIFYING -> {
+                publishVerifyingState(prefs, checkedAt)
+                enqueueVerification(context.applicationContext, downloadId)
+                return
+            }
+            UpdateStatus.DOWNLOADING -> {
+                _uiState.value =
+                    UpdateUiState(
+                        status = UpdateStatus.DOWNLOADING,
+                        version = prefs.getString(KEY_VERSION, null),
+                        releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
+                        lastCheckedEpochMs = checkedAt,
+                    )
+                resumeDownload(context.applicationContext, downloadId)
+                return
+            }
+            else -> Unit
         }
 
         if (prefs.contains(KEY_DOWNLOAD_ID) || prefs.contains(KEY_PATH)) clearDownloadedUpdate(context)
         _uiState.value = UpdateUiState(lastCheckedEpochMs = checkedAt)
+    }
+
+    private fun publishReadyState(
+        prefs: SharedPreferences,
+        checkedAt: Long? = prefs.getLong(KEY_LAST_CHECKED, 0L).takeIf { it > 0L },
+        isRefreshing: Boolean = false,
+    ) {
+        _uiState.value =
+            UpdateUiState(
+                status = UpdateStatus.READY,
+                version = prefs.getString(KEY_VERSION, null),
+                releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
+                lastCheckedEpochMs = checkedAt,
+                downloadProgressPercent = 100,
+                isRefreshing = isRefreshing,
+            )
+    }
+
+    private fun publishVerifyingState(
+        prefs: SharedPreferences,
+        checkedAt: Long? = prefs.getLong(KEY_LAST_CHECKED, 0L).takeIf { it > 0L },
+    ) {
+        _uiState.value =
+            UpdateUiState(
+                status = UpdateStatus.VERIFYING,
+                version = prefs.getString(KEY_VERSION, null),
+                releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
+                lastCheckedEpochMs = checkedAt,
+                downloadProgressPercent = 100,
+            )
+    }
+
+    private fun SharedPreferences.hasCompleteDownloadedFile(): Boolean {
+        val file = getString(KEY_PATH, null)?.let(::File)?.takeIf(File::isFile) ?: return false
+        return runCatching {
+            requireDownloadedFileSize(
+                actualBytes = file.length(),
+                expectedBytes = getLong(KEY_SIZE, -1L),
+            )
+        }.isSuccess
+    }
+
+    private fun SharedPreferences.hasValidReadyUpdate(): Boolean =
+        getBoolean(KEY_VERIFIED, false) &&
+            hasCompleteDownloadedFile() &&
+            getLong(KEY_VERSION_CODE, -1L) > BuildConfig.VERSION_CODE
+
+    private fun SharedPreferences.captureVerificationSnapshot(expectedDownloadId: Long): Result<UpdateVerificationSnapshot?> {
+        val values = all.toMap()
+        val currentDownloadId = values[KEY_DOWNLOAD_ID] as? Long
+        if (currentDownloadId != expectedDownloadId || values[KEY_VERIFIED] == true) {
+            return Result.success(null)
+        }
+        return runCatching {
+            UpdateVerificationSnapshot(
+                downloadId = expectedDownloadId,
+                file = File(requireNotNull(values[KEY_PATH] as? String) { "Downloaded APK path is missing" }),
+                expectedSizeBytes = requireNotNull(values[KEY_SIZE] as? Long) { "Downloaded APK size is missing" },
+                sha256 = requireNotNull(values[KEY_SHA256] as? String) { "APK SHA-256 is missing" },
+                certificateSha256 =
+                    requireNotNull(values[KEY_CERTIFICATE] as? String) {
+                        "Certificate SHA-256 is missing"
+                    },
+                packageName = requireNotNull(values[KEY_PACKAGE] as? String) { "Update package is missing" },
+                version = requireNotNull(values[KEY_VERSION] as? String) { "Update version is missing" },
+                versionCode = requireNotNull(values[KEY_VERSION_CODE] as? Long) { "Update version code is missing" },
+                repository = requireNotNull(values[KEY_REPOSITORY] as? String) { "Update repository is missing" },
+            )
+        }
     }
 
     fun checkNow(context: Context) {
@@ -251,6 +345,7 @@ object UpdateManager {
         }
     }
 
+    @Synchronized
     fun onSettingsChanged(
         context: Context,
         settings: UpdateSettings,
@@ -272,7 +367,9 @@ object UpdateManager {
     }
 
     fun checkOnLaunch(context: Context) {
-        val lastCheck = context.updatePreferences().getLong(KEY_LAST_CHECKED, 0L)
+        val prefs = context.updatePreferences()
+        if (prefs.hasValidReadyUpdate()) return
+        val lastCheck = prefs.getLong(KEY_LAST_CHECKED, 0L)
         if (System.currentTimeMillis() - lastCheck < CHECK_INTERVAL_MILLIS) return
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
         val request =
@@ -313,68 +410,155 @@ object UpdateManager {
         settings: UpdateSettings,
         interactive: Boolean,
     ): Boolean =
-        checkMutex.withLock {
-            if (interactive) {
+        checkMutex.withLockIfIdle {
+            try {
+                performCheckLocked(context, settings, interactive)
+            } finally {
+                if (interactive) {
+                    _uiState.update { current -> current.copy(isRefreshing = false) }
+                }
+            }
+        } ?: true
+
+    private suspend fun performCheckLocked(
+        context: Context,
+        settings: UpdateSettings,
+        interactive: Boolean,
+    ): Boolean {
+        val initialPrefs = context.updatePreferences()
+        val repository = settings.activeRepository
+        val preserveReady =
+            shouldPreserveReadyForRepository(
+                hasValidReady = initialPrefs.hasValidReadyUpdate(),
+                storedRepository = initialPrefs.getString(KEY_REPOSITORY, null),
+                requestedRepository = repository,
+            )
+        if (interactive) {
+            if (preserveReady) {
+                publishReadyState(initialPrefs, isRefreshing = true)
+            } else {
+                prepareInteractiveCheckState()
+            }
+        }
+        return runCatching {
+            val selectedRepository = requireNotNull(repository) { "Select a valid update repository" }
+            val update = client.checkLatest(selectedRepository, BuildConfig.VERSION_CODE.toLong(), BuildConfig.UPDATE_PACKAGE_NAME)
+            applyCheckResult(context, settings, selectedRepository, update)
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                handleCheckFailure(context, repository, error, interactive)
+                false
+            },
+        )
+    }
+
+    @Synchronized
+    private fun applyCheckResult(
+        context: Context,
+        settings: UpdateSettings,
+        repository: String,
+        update: UpdateInfo?,
+    ) {
+        val prefs = context.updatePreferences()
+        if (!prefs.isCurrentRepository(repository)) return
+        val checkedAt = System.currentTimeMillis()
+        prefs.edit().putLong(KEY_LAST_CHECKED, checkedAt).apply()
+        val keepReady =
+            shouldKeepReadyAfterCheck(
+                hasValidReady =
+                    shouldPreserveReadyForRepository(
+                        hasValidReady = prefs.hasValidReadyUpdate(),
+                        storedRepository = prefs.getString(KEY_REPOSITORY, null),
+                        requestedRepository = repository,
+                    ),
+                readyVersionCode = prefs.getLong(KEY_VERSION_CODE, -1L),
+                availableVersionCode = update?.versionCode,
+            )
+        when {
+            keepReady -> {
+                availableUpdate = null
+                publishReadyState(prefs, checkedAt)
+            }
+            update == null -> {
+                clearDownloadedUpdate(context)
+                availableUpdate = null
                 _uiState.value =
-                    _uiState.value.copy(
-                        status = UpdateStatus.CHECKING,
-                        message = null,
-                        downloadProgressPercent = null,
+                    UpdateUiState(
+                        status = UpdateStatus.LATEST,
+                        lastCheckedEpochMs = checkedAt,
                     )
             }
-            runCatching {
-                val repository = requireNotNull(settings.activeRepository) { "Select a valid update repository" }
-                val update = client.checkLatest(repository, BuildConfig.VERSION_CODE.toLong(), BuildConfig.UPDATE_PACKAGE_NAME)
-                if (!repository.equals(activeRepository, ignoreCase = true)) return@runCatching
-                val checkedAt = System.currentTimeMillis()
-                context.updatePreferences().edit().putLong(KEY_LAST_CHECKED, checkedAt).apply()
-                if (update == null) {
-                    clearDownloadedUpdate(context)
-                    availableUpdate = null
-                    _uiState.value =
-                        UpdateUiState(
-                            status = UpdateStatus.LATEST,
-                            lastCheckedEpochMs = checkedAt,
-                        )
+            else -> {
+                availableUpdate = update
+                _uiState.value =
+                    UpdateUiState(
+                        status = UpdateStatus.AVAILABLE,
+                        version = update.version,
+                        releaseUrl = update.releaseUrl,
+                        message = update.releaseNotes,
+                        lastCheckedEpochMs = checkedAt,
+                    )
+                if (settings.automaticDownload) {
+                    runCatching { enqueueDownload(context, update) }
+                        .onFailure { error ->
+                            handleDownloadStartFailure(context, update.repository, error)
+                        }
                 } else {
-                    availableUpdate = update
-                    _uiState.value =
-                        UpdateUiState(
-                            status = UpdateStatus.AVAILABLE,
-                            version = update.version,
-                            releaseUrl = update.releaseUrl,
-                            message = update.releaseNotes,
-                            lastCheckedEpochMs = checkedAt,
-                        )
-                    if (settings.automaticDownload) {
-                        enqueueDownload(context, update)
-                    } else {
-                        postUpdateAvailable(context, update)
-                    }
+                    postUpdateAvailable(context, update)
                 }
-            }.fold(
-                onSuccess = { true },
-                onFailure = { error ->
-                    if (interactive) {
-                        _uiState.value =
-                            _uiState.value.copy(
-                                status = UpdateStatus.ERROR,
-                                message = error.toUserMessage(),
-                                downloadProgressPercent = null,
-                            )
-                    }
-                    false
-                },
-            )
+            }
         }
+    }
+
+    private fun prepareInteractiveCheckState() {
+        _uiState.value =
+            _uiState.value.copy(
+                status = UpdateStatus.CHECKING,
+                message = null,
+                downloadProgressPercent = null,
+                failureStage = null,
+                isRefreshing = true,
+            )
+    }
+
+    @Synchronized
+    private fun handleCheckFailure(
+        context: Context,
+        repository: String?,
+        error: Throwable,
+        interactive: Boolean,
+    ) {
+        val prefs = context.updatePreferences()
+        if (!prefs.isCurrentRepository(repository)) return
+        logUpdateFailure(UpdateFailureStage.CHECK, error)
+        if (!interactive) return
+        if (
+            shouldPreserveReadyForRepository(
+                hasValidReady = prefs.hasValidReadyUpdate(),
+                storedRepository = prefs.getString(KEY_REPOSITORY, null),
+                requestedRepository = repository,
+            )
+        ) {
+            publishReadyState(prefs)
+        } else {
+            _uiState.update { current ->
+                transitionToFailure(
+                    current = current,
+                    stage = UpdateFailureStage.CHECK,
+                    preserveReady = current.status == UpdateStatus.READY,
+                )
+            }
+        }
+    }
 
     fun downloadAvailableUpdate(context: Context): Boolean {
         val update = availableUpdate ?: return false
         return runCatching { enqueueDownload(context, update) }
             .fold(
-                onSuccess = { true },
+                onSuccess = { it },
                 onFailure = {
-                    reportVerificationFailure(it)
+                    handleDownloadStartFailure(context, update.repository, it)
                     false
                 },
             )
@@ -384,17 +568,19 @@ object UpdateManager {
     fun enqueueDownload(
         context: Context,
         info: UpdateInfo,
-    ) {
+    ): Boolean {
         require(isSafeGitHubReleaseAsset(info.repository, info.apkUrl)) { "Unsafe update URL" }
         require(info.apkSizeBytes in 1..MAX_APK_BYTES) { "Invalid update size" }
         val appContext = context.applicationContext
         val prefs = appContext.updatePreferences()
-        if (resumeMatchingDownload(appContext, info)) return
+        val configuredRepository = prefs.getString(KEY_ACTIVE_REPOSITORY, null) ?: activeRepository
+        if (configuredRepository != null && !info.repository.equals(configuredRepository, ignoreCase = true)) {
+            return false
+        }
+        if (resumeMatchingDownload(appContext, info)) return true
 
-        clearDownloadedUpdate(appContext)
-        availableUpdate = info
         val safeVersion = info.version.replace(Regex("[^A-Za-z0-9._-]"), "-")
-        val fileName = "neko-status-$safeVersion.apk"
+        val fileName = "neko-status-$safeVersion-${info.versionCode}-${info.releaseId}.apk"
         val target = File(appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
         if (target.exists()) target.delete()
         val request =
@@ -404,6 +590,8 @@ object UpdateManager {
                 .setAllowedOverMetered(true)
                 .setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, fileName)
         val id = appContext.getSystemService(DownloadManager::class.java).enqueue(request)
+        clearDownloadedUpdate(appContext)
+        availableUpdate = info
         prefs.edit()
             .putLong(KEY_DOWNLOAD_ID, id)
             .putString(KEY_PATH, target.absolutePath)
@@ -423,9 +611,12 @@ object UpdateManager {
                 status = UpdateStatus.DOWNLOADING,
                 version = info.version,
                 releaseUrl = info.releaseUrl,
+                message = null,
                 downloadProgressPercent = 0,
+                failureStage = null,
             )
         monitorDownload(appContext, id)
+        return true
     }
 
     private fun resumeMatchingDownload(
@@ -438,28 +629,36 @@ object UpdateManager {
             existingId >= 0L &&
                 prefs.getLong(KEY_RELEASE_ID, -1L) == info.releaseId &&
                 prefs.getString(KEY_REPOSITORY, null).equals(info.repository, ignoreCase = true)
-        if (sameRelease) {
-            when (context.getSystemService(DownloadManager::class.java).snapshot(existingId)?.status) {
-                DownloadManager.STATUS_PENDING,
-                DownloadManager.STATUS_RUNNING,
-                DownloadManager.STATUS_PAUSED,
-                -> {
-                    _uiState.value =
-                        _uiState.value.copy(
-                            status = UpdateStatus.DOWNLOADING,
-                            version = info.version,
-                            releaseUrl = info.releaseUrl,
-                        )
-                    monitorDownload(context, existingId)
-                    return true
-                }
-                DownloadManager.STATUS_SUCCESSFUL -> {
-                    enqueueVerification(context, existingId)
-                    return true
-                }
+        return when {
+            !sameRelease -> false
+            prefs.hasValidReadyUpdate() -> {
+                publishReadyState(prefs)
+                true
             }
+            else ->
+                when (context.getSystemService(DownloadManager::class.java).snapshot(existingId)?.status) {
+                    DownloadManager.STATUS_PENDING,
+                    DownloadManager.STATUS_RUNNING,
+                    DownloadManager.STATUS_PAUSED,
+                    -> {
+                        _uiState.value =
+                            _uiState.value.copy(
+                                status = UpdateStatus.DOWNLOADING,
+                                version = info.version,
+                                releaseUrl = info.releaseUrl,
+                                message = null,
+                                failureStage = null,
+                            )
+                        monitorDownload(context, existingId)
+                        true
+                    }
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        enqueueVerification(context, existingId)
+                        true
+                    }
+                    else -> false
+                }
         }
-        return false
     }
 
     private fun monitorDownload(
@@ -479,10 +678,21 @@ object UpdateManager {
                     } else {
                         null
                     }
-                _uiState.value = _uiState.value.copy(downloadProgressPercent = percent)
+                if (!publishDownloadProgressIfCurrent(context, id, percent)) return@launch
                 delay(750)
             }
         }
+    }
+
+    @Synchronized
+    private fun publishDownloadProgressIfCurrent(
+        context: Context,
+        downloadId: Long,
+        percent: Int?,
+    ): Boolean {
+        if (!context.updatePreferences().isCurrentVerificationTask(downloadId)) return false
+        _uiState.update { current -> current.copy(downloadProgressPercent = percent) }
+        return true
     }
 
     private fun resumeDownload(
@@ -499,44 +709,64 @@ object UpdateManager {
                 -> monitorDownload(context, id)
                 DownloadManager.STATUS_SUCCESSFUL -> enqueueVerification(context, id)
                 else -> {
-                    clearDownloadedUpdate(context)
-                    reportVerificationFailure(IllegalStateException("Update download did not complete"))
+                    val prefs = context.updatePreferences()
+                    if (snapshot == null && prefs.hasCompleteDownloadedFile()) {
+                        enqueueVerification(context, id)
+                    } else {
+                        handleDownloadFailure(
+                            context = context,
+                            downloadId = id,
+                            error = IllegalStateException("Update download did not complete"),
+                        )
+                    }
                 }
             }
         }
     }
 
+    @Synchronized
+    internal fun handleDownloadFailure(
+        context: Context,
+        downloadId: Long,
+        error: Throwable,
+    ) {
+        if (!context.updatePreferences().isCurrentVerificationTask(downloadId)) return
+        clearDownloadedUpdate(context)
+        reportFailure(UpdateFailureStage.DOWNLOAD, error)
+    }
+
     suspend fun verifyDownload(
         context: Context,
         downloadId: Long,
-    ): Result<File> =
+    ): Result<File?> =
         withContext(Dispatchers.IO) {
             verificationMutex.withLock {
                 val prefs = context.updatePreferences()
-                val expectedDownloadId = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
+                val snapshot =
+                    prefs.captureVerificationSnapshot(downloadId).getOrElse { error ->
+                        return@withLock Result.failure(error)
+                    } ?: return@withLock Result.success(null)
                 runCatching {
-                    require(downloadId == expectedDownloadId) { "Unexpected download" }
-                    val file = File(requireNotNull(prefs.getString(KEY_PATH, null)))
-                    require(file.isFile) { "Downloaded APK is missing" }
+                    require(snapshot.file.isFile) { "Downloaded APK is missing" }
                     requireDownloadedFileSize(
-                        actualBytes = file.length(),
-                        expectedBytes = prefs.getLong(KEY_SIZE, -1L),
+                        actualBytes = snapshot.file.length(),
+                        expectedBytes = snapshot.expectedSizeBytes,
                     )
-                    val expectedSha = requireDigest(requireNotNull(prefs.getString(KEY_SHA256, null)), "APK SHA-256")
-                    require(file.sha256() == expectedSha) { "APK SHA-256 mismatch" }
+                    val expectedSha = requireDigest(snapshot.sha256, "APK SHA-256")
+                    require(snapshot.file.sha256() == expectedSha) { "APK SHA-256 mismatch" }
+                    if (!isCurrentVerificationSnapshot(context, snapshot)) return@runCatching null
 
                     val archive =
-                        context.packageManager.getArchivePackageInfoWithSigning(file.absolutePath)
+                        context.packageManager.getArchivePackageInfoWithSigning(snapshot.file.absolutePath)
                             ?: error("Invalid APK")
-                    val expectedPackage = requireNotNull(prefs.getString(KEY_PACKAGE, null))
-                    val expectedVersion = requireNotNull(prefs.getString(KEY_VERSION, null))
-                    val expectedVersionCode = prefs.getLong(KEY_VERSION_CODE, -1L)
-                    require(expectedVersionCode > BuildConfig.VERSION_CODE) { "Update is not newer than the installed version" }
-                    require(archive.packageName == expectedPackage && expectedPackage == BuildConfig.UPDATE_PACKAGE_NAME) {
+                    require(snapshot.versionCode > BuildConfig.VERSION_CODE) { "Update is not newer than the installed version" }
+                    require(archive.packageName == snapshot.packageName && snapshot.packageName == BuildConfig.UPDATE_PACKAGE_NAME) {
                         "Unexpected package name"
                     }
-                    require(archive.longVersionCode == expectedVersionCode) { "APK version code does not match update manifest" }
-                    require(archive.versionName == expectedVersion) { "APK version name does not match update manifest" }
+                    require(archive.longVersionCode == snapshot.versionCode) {
+                        "APK version code does not match update manifest"
+                    }
+                    require(archive.versionName == snapshot.version) { "APK version name does not match update manifest" }
 
                     val archiveDigests = archive.signingDigests()
                     val installed = context.packageManager.getPackageInfoWithSigning(context.packageName)
@@ -545,32 +775,43 @@ object UpdateManager {
                         "APK signing certificate does not match installed app"
                     }
                     val expectedCertificate =
-                        requireDigest(requireNotNull(prefs.getString(KEY_CERTIFICATE, null)), "certificate SHA-256")
+                        requireDigest(snapshot.certificateSha256, "certificate SHA-256")
                     require(expectedCertificate in archiveDigests) { "APK certificate does not match update manifest" }
-                    if (prefs.getString(KEY_REPOSITORY, null).equals(UpdateSettings.OFFICIAL_REPOSITORY, ignoreCase = true)) {
+                    if (snapshot.repository.equals(UpdateSettings.OFFICIAL_REPOSITORY, ignoreCase = true)) {
                         BuildConfig.OFFICIAL_CERTIFICATE_SHA256.takeIf(String::isNotBlank)?.let { official ->
                             require(requireDigest(official, "official certificate SHA-256") in archiveDigests) {
                                 "APK is not signed by the official certificate"
                             }
                         }
                     }
-                    prefs.edit().putBoolean(KEY_VERIFIED, true).apply()
-                    _uiState.value =
-                        _uiState.value.copy(
-                            status = UpdateStatus.READY,
-                            version = expectedVersion,
-                            releaseUrl = prefs.getString(KEY_RELEASE_URL, null),
-                            downloadProgressPercent = 100,
-                            message = null,
-                        )
-                    file
-                }.onFailure {
-                    if (downloadId == context.updatePreferences().getLong(KEY_DOWNLOAD_ID, -1L)) {
-                        clearDownloadedUpdate(context)
-                    }
+                    if (!commitVerifiedUpdate(context, snapshot)) return@runCatching null
+                    snapshot.file
                 }
             }
         }
+
+    private fun isCurrentVerificationSnapshot(
+        context: Context,
+        snapshot: UpdateVerificationSnapshot,
+    ): Boolean =
+        context.updatePreferences()
+            .captureVerificationSnapshot(snapshot.downloadId)
+            .getOrNull() == snapshot
+
+    @Synchronized
+    private fun commitVerifiedUpdate(
+        context: Context,
+        snapshot: UpdateVerificationSnapshot,
+    ): Boolean {
+        if (!isCurrentVerificationSnapshot(context, snapshot)) return false
+        val prefs = context.updatePreferences()
+        prefs.edit()
+            .putBoolean(KEY_VERIFIED, true)
+            .remove(KEY_VERIFYING)
+            .apply()
+        publishReadyState(prefs)
+        return true
+    }
 
     fun installReadyUpdate(context: Context): Boolean {
         val prefs = context.updatePreferences()
@@ -627,6 +868,20 @@ object UpdateManager {
                 .setAutoCancel(false)
                 .build()
         context.getSystemService(NotificationManager::class.java).notify(UPDATE_READY_ID, notification)
+    }
+
+    @Synchronized
+    internal fun postInstallNotificationIfReady(
+        context: Context,
+        downloadId: Long,
+    ) {
+        val prefs = context.updatePreferences()
+        if (
+            prefs.getLong(KEY_DOWNLOAD_ID, -1L) == downloadId &&
+            prefs.hasValidReadyUpdate()
+        ) {
+            postInstallNotification(context)
+        }
     }
 
     private fun postUpdateAvailable(
@@ -719,39 +974,185 @@ object UpdateManager {
         }.getOrNull()
     }
 
-    internal fun reportVerificationFailure(error: Throwable) {
-        _uiState.value =
-            _uiState.value.copy(
-                status = UpdateStatus.ERROR,
-                message = error.toUserMessage(),
-                downloadProgressPercent = null,
-            )
+    internal fun reportDownloadFailure(error: Throwable) {
+        reportFailure(UpdateFailureStage.DOWNLOAD, error)
     }
 
+    @Synchronized
+    internal fun handleDownloadStartFailure(
+        context: Context,
+        repository: String,
+        error: Throwable,
+    ) {
+        val prefs = context.updatePreferences()
+        if (!prefs.isCurrentRepository(repository)) return
+        logUpdateFailure(UpdateFailureStage.DOWNLOAD, error)
+        if (
+            shouldPreserveReadyForRepository(
+                hasValidReady = prefs.hasValidReadyUpdate(),
+                storedRepository = prefs.getString(KEY_REPOSITORY, null),
+                requestedRepository = repository,
+            )
+        ) {
+            publishReadyState(prefs)
+        } else {
+            _uiState.update { current ->
+                transitionToFailure(
+                    current = current,
+                    stage = UpdateFailureStage.DOWNLOAD,
+                    preserveReady = current.status == UpdateStatus.READY,
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    internal fun handleVerificationFailure(
+        context: Context,
+        downloadId: Long,
+        error: Throwable,
+    ): Boolean {
+        if (!context.updatePreferences().isCurrentVerificationTask(downloadId)) return false
+        clearDownloadedUpdate(context)
+        reportFailure(UpdateFailureStage.VERIFY, error)
+        return true
+    }
+
+    @SuppressLint("ApplySharedPref")
+    @Synchronized
+    internal fun handleVerificationSchedulingFailure(
+        context: Context,
+        downloadId: Long,
+        error: Throwable,
+    ) {
+        val prefs = context.updatePreferences()
+        if (!prefs.isCurrentVerificationTask(downloadId)) return
+        // Persist recovery before ERROR is observable so a process exit cannot restore a stuck VERIFYING state.
+        prefs.edit().remove(KEY_VERIFYING).commit()
+        reportFailure(UpdateFailureStage.VERIFY, error)
+    }
+
+    private fun reportFailure(
+        stage: UpdateFailureStage,
+        error: Throwable,
+    ) {
+        logUpdateFailure(stage, error)
+        _uiState.update { current ->
+            transitionToFailure(
+                current = current,
+                stage = stage,
+                preserveReady = current.status == UpdateStatus.READY,
+            )
+        }
+    }
+
+    @Synchronized
     internal fun enqueueVerification(
         context: Context,
         downloadId: Long,
     ) {
-        if (downloadId < 0L || !isExpectedDownload(context, downloadId)) return
-        val request =
-            OneTimeWorkRequestBuilder<UpdateVerificationWorker>()
-                .setInputData(workDataOf(WORK_INPUT_DOWNLOAD_ID to downloadId))
-                .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            VERIFY_WORK,
-            ExistingWorkPolicy.REPLACE,
-            request,
-        )
+        if (downloadId < 0L) return
+        val prefs = context.updatePreferences()
+        if (prefs.getLong(KEY_DOWNLOAD_ID, -1L) != downloadId) return
+        if (prefs.getBoolean(KEY_VERIFIED, false)) {
+            if (prefs.hasValidReadyUpdate()) publishReadyState(prefs)
+        } else if (prepareDownloadForVerification(context, prefs, downloadId)) {
+            prefs.edit().putBoolean(KEY_VERIFYING, true).apply()
+            publishVerifyingState(prefs)
+            val request =
+                OneTimeWorkRequestBuilder<UpdateVerificationWorker>()
+                    .setInputData(workDataOf(WORK_INPUT_DOWNLOAD_ID to downloadId))
+                    .build()
+            runCatching {
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    verificationWorkName(downloadId),
+                    ExistingWorkPolicy.KEEP,
+                    request,
+                )
+            }.onSuccess { operation ->
+                observeVerificationEnqueue(context.applicationContext, downloadId, operation)
+            }.onFailure { error ->
+                handleVerificationSchedulingFailure(context, downloadId, error)
+            }
+        }
+    }
+
+    private fun observeVerificationEnqueue(
+        context: Context,
+        downloadId: Long,
+        operation: Operation,
+    ) {
+        val result = operation.result
+        runCatching {
+            result.addListener(
+                {
+                    runCatching { result.get() }
+                        .onFailure { error ->
+                            handleVerificationSchedulingFailure(context, downloadId, error)
+                        }
+                },
+                operationCallbackExecutor,
+            )
+        }.onFailure { error ->
+            handleVerificationSchedulingFailure(context, downloadId, error)
+        }
+    }
+
+    private fun prepareDownloadForVerification(
+        context: Context,
+        prefs: SharedPreferences,
+        downloadId: Long,
+    ): Boolean {
+        val snapshot = context.getSystemService(DownloadManager::class.java).snapshot(downloadId)
+        return when {
+            snapshot?.status == DownloadManager.STATUS_SUCCESSFUL -> true
+            snapshot?.status?.isDownloadInProgress() == true -> {
+                prefs.edit().remove(KEY_VERIFYING).apply()
+                _uiState.update { current ->
+                    current.copy(
+                        status = UpdateStatus.DOWNLOADING,
+                        message = null,
+                        failureStage = null,
+                    )
+                }
+                monitorDownload(context, downloadId)
+                false
+            }
+            snapshot == null && prefs.hasCompleteDownloadedFile() -> true
+            else -> {
+                clearDownloadedUpdate(context)
+                reportDownloadFailure(IllegalStateException("Update download did not complete"))
+                false
+            }
+        }
     }
 
     internal fun isExpectedDownload(
         context: Context,
         downloadId: Long,
-    ): Boolean = context.updatePreferences().getLong(KEY_DOWNLOAD_ID, -1L) == downloadId
+    ): Boolean = context.updatePreferences().isCurrentVerificationTask(downloadId)
 
+    private fun SharedPreferences.isCurrentVerificationTask(downloadId: Long): Boolean {
+        val values = all.toMap()
+        return values[KEY_VERIFIED] != true &&
+            values[KEY_DOWNLOAD_ID] == downloadId
+    }
+
+    private fun SharedPreferences.isCurrentRepository(repository: String?): Boolean {
+        val persistedRepository = getString(KEY_ACTIVE_REPOSITORY, null)
+        return if (repository == null) {
+            activeRepository == null && persistedRepository == null
+        } else {
+            (activeRepository == null || repository.equals(activeRepository, ignoreCase = true)) &&
+                (persistedRepository == null || repository.equals(persistedRepository, ignoreCase = true))
+        }
+    }
+
+    @Synchronized
     private fun clearDownloadedUpdate(context: Context) {
         val prefs = context.updatePreferences()
-        prefs.getLong(KEY_DOWNLOAD_ID, -1L).takeIf { it >= 0L }?.let { id ->
+        val downloadId = prefs.getLong(KEY_DOWNLOAD_ID, -1L).takeIf { it >= 0L }
+        downloadId?.let { id ->
             runCatching { context.getSystemService(DownloadManager::class.java).remove(id) }
         }
         prefs.getString(KEY_PATH, null)?.let(::File)?.deleteUpdateFile(context)
@@ -768,14 +1169,19 @@ object UpdateManager {
             .remove(KEY_RELEASE_ID)
             .remove(KEY_RELEASE_URL)
             .remove(KEY_VERIFIED)
+            .remove(KEY_VERIFYING)
             .apply()
         context.getSystemService(NotificationManager::class.java).apply {
             cancel(UPDATE_AVAILABLE_ID)
             cancel(UPDATE_READY_ID)
         }
-        runCatching { WorkManager.getInstance(context).cancelUniqueWork(VERIFY_WORK) }
+        downloadId?.let { id ->
+            runCatching { WorkManager.getInstance(context).cancelUniqueWork(verificationWorkName(id)) }
+        }
         availableUpdate = null
     }
+
+    private fun verificationWorkName(downloadId: Long): String = "$VERIFY_WORK-$downloadId"
 
     private const val PERIODIC_WORK = "neko-periodic-release-check"
     private const val STARTUP_WORK = "neko-startup-release-check"
@@ -794,6 +1200,7 @@ object UpdateManager {
     private const val KEY_RELEASE_ID = "release_id"
     private const val KEY_RELEASE_URL = "release_url"
     private const val KEY_VERIFIED = "verified"
+    private const val KEY_VERIFYING = "verifying"
     private const val KEY_LAST_CHECKED = "last_checked"
     private const val KEY_ACTIVE_REPOSITORY = "active_repository"
     private const val UPDATE_CHANNEL = "neko-status-updates"
@@ -803,6 +1210,66 @@ object UpdateManager {
     private const val PAYLOAD_SEPARATOR = "|"
     private const val CHECK_INTERVAL_MILLIS = 24 * 60 * 60 * 1_000L
 }
+
+internal suspend fun <T> Mutex.withLockIfIdle(block: suspend () -> T): T? {
+    if (!tryLock()) return null
+    return try {
+        block()
+    } finally {
+        unlock()
+    }
+}
+
+@Suppress("LongParameterList")
+internal fun resolveRestoredUpdateStatus(
+    verified: Boolean,
+    readyFileValid: Boolean,
+    storedVersionCode: Long,
+    installedVersionCode: Long,
+    downloadId: Long,
+    verificationEnqueued: Boolean,
+): UpdateStatus {
+    val newerVersion = storedVersionCode > installedVersionCode
+    return when {
+        verified && readyFileValid && newerVersion -> UpdateStatus.READY
+        !verified && downloadId >= 0L && newerVersion && verificationEnqueued -> UpdateStatus.VERIFYING
+        !verified && downloadId >= 0L && newerVersion -> UpdateStatus.DOWNLOADING
+        else -> UpdateStatus.IDLE
+    }
+}
+
+internal fun transitionToFailure(
+    current: UpdateUiState,
+    stage: UpdateFailureStage,
+    preserveReady: Boolean,
+): UpdateUiState =
+    if (preserveReady && current.status == UpdateStatus.READY) {
+        current
+    } else {
+        current.copy(
+            status = UpdateStatus.ERROR,
+            message = null,
+            downloadProgressPercent = null,
+            failureStage = stage,
+        )
+    }
+
+internal fun shouldPreserveReadyForRepository(
+    hasValidReady: Boolean,
+    storedRepository: String?,
+    requestedRepository: String?,
+): Boolean =
+    hasValidReady &&
+        requestedRepository != null &&
+        storedRepository.equals(requestedRepository, ignoreCase = true)
+
+internal fun shouldKeepReadyAfterCheck(
+    hasValidReady: Boolean,
+    readyVersionCode: Long,
+    availableVersionCode: Long?,
+): Boolean =
+    hasValidReady &&
+        (availableVersionCode == null || availableVersionCode <= readyVersionCode)
 
 @EntryPoint
 @InstallIn(SingletonComponent::class)
@@ -824,13 +1291,18 @@ class UpdateVerificationWorker(context: Context, params: WorkerParameters) : Cor
         val downloadId = inputData.getLong(UpdateManager.WORK_INPUT_DOWNLOAD_ID, -1L)
         if (!UpdateManager.isExpectedDownload(applicationContext, downloadId)) return Result.success()
         return UpdateManager.verifyDownload(applicationContext, downloadId).fold(
-            onSuccess = {
-                UpdateManager.postInstallNotification(applicationContext)
+            onSuccess = { file ->
+                if (file != null) {
+                    UpdateManager.postInstallNotificationIfReady(applicationContext, downloadId)
+                }
                 Result.success()
             },
             onFailure = {
-                UpdateManager.reportVerificationFailure(it)
-                Result.failure()
+                if (UpdateManager.handleVerificationFailure(applicationContext, downloadId, it)) {
+                    Result.failure()
+                } else {
+                    Result.success()
+                }
             },
         )
     }
@@ -846,7 +1318,9 @@ class UpdateActionReceiver : BroadcastReceiver() {
             ?.let(UpdateManager::payloadToUpdateInfo)
             ?.let { info ->
                 runCatching { UpdateManager.enqueueDownload(context, info) }
-                    .onFailure(UpdateManager::reportVerificationFailure)
+                    .onFailure { error ->
+                        UpdateManager.handleDownloadStartFailure(context, info.repository, error)
+                    }
             }
     }
 
@@ -970,13 +1444,24 @@ private fun PackageManager.getPackageInfoWithSigning(packageName: String): Packa
         getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
     }
 
-private fun Throwable.toUserMessage(): String =
+private fun logUpdateFailure(
+    stage: UpdateFailureStage,
+    error: Throwable,
+) {
+    Log.w(UPDATE_LOG_TAG, "stage=${stage.name} category=${error.diagnosticCategory()}")
+}
+
+private fun Throwable.diagnosticCategory(): String =
     when (this) {
-        is IOException -> "Unable to reach GitHub. Check the network and try again."
-        else -> message?.take(180) ?: "Unable to check for updates."
+        is IOException -> "io"
+        is SecurityException -> "security"
+        is IllegalArgumentException -> "invalid-data"
+        is IllegalStateException -> "invalid-state"
+        else -> "unexpected"
     }
 
 private const val UPDATE_MANIFEST_NAME = "update.json"
+private const val UPDATE_LOG_TAG = "NekoUpdater"
 private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 internal const val MAX_APK_BYTES = 262_144_000L
 internal const val MAX_VERSION_CHARS = 80

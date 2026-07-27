@@ -5,7 +5,14 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Environment
+import com.nekonf.nekostatus.core.model.UpdateFailureStage
+import com.nekonf.nekostatus.core.model.UpdateSettings
+import com.nekonf.nekostatus.core.model.UpdateSource
 import com.nekonf.nekostatus.core.model.UpdateStatus
+import com.nekonf.nekostatus.core.model.UpdateUiState
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -97,6 +104,148 @@ class UpdateValidationTest {
     }
 }
 
+class UpdateStateMachineTest {
+    @Test
+    fun `in flight check ignores duplicate instead of queueing it`() =
+        runTest {
+            val mutex = Mutex()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val first =
+                async {
+                    mutex.withLockIfIdle {
+                        entered.complete(Unit)
+                        release.await()
+                        1
+                    }
+                }
+            entered.await()
+            var duplicateExecuted = false
+
+            val duplicate =
+                mutex.withLockIfIdle {
+                    duplicateExecuted = true
+                    2
+                }
+
+            assertNull(duplicate)
+            assertFalse(duplicateExecuted)
+            release.complete(Unit)
+            assertEquals(1, first.await())
+        }
+
+    @Test
+    fun `restoration distinguishes downloading verifying ready and stale states`() {
+        assertEquals(
+            UpdateStatus.DOWNLOADING,
+            restoredStatus(verified = false, readyFileValid = false, verificationEnqueued = false),
+        )
+        assertEquals(
+            UpdateStatus.VERIFYING,
+            restoredStatus(verified = false, readyFileValid = true, verificationEnqueued = true),
+        )
+        assertEquals(
+            UpdateStatus.READY,
+            restoredStatus(verified = true, readyFileValid = true, verificationEnqueued = false),
+        )
+        assertEquals(
+            UpdateStatus.IDLE,
+            restoredStatus(verified = true, readyFileValid = false, verificationEnqueued = false),
+        )
+    }
+
+    @Test
+    fun `ready install entry wins over a later failure transition`() {
+        val ready =
+            UpdateUiState(
+                status = UpdateStatus.READY,
+                version = "2.0.0",
+                downloadProgressPercent = 100,
+            )
+
+        val result =
+            transitionToFailure(
+                current = ready,
+                stage = UpdateFailureStage.VERIFY,
+                preserveReady = true,
+            )
+
+        assertEquals(ready, result)
+    }
+
+    @Test
+    fun `failure transition exposes stable stage without exception details`() {
+        val result =
+            transitionToFailure(
+                current =
+                    UpdateUiState(
+                        status = UpdateStatus.CHECKING,
+                        message = "https://signed.example/private-token",
+                    ),
+                stage = UpdateFailureStage.CHECK,
+                preserveReady = false,
+            )
+
+        assertEquals(UpdateStatus.ERROR, result.status)
+        assertEquals(UpdateFailureStage.CHECK, result.failureStage)
+        assertNull(result.message)
+        assertNull(result.downloadProgressPercent)
+    }
+
+    @Test
+    fun `ready package is retained for same repository unless a newer release exists`() {
+        assertTrue(
+            shouldPreserveReadyForRepository(
+                hasValidReady = true,
+                storedRepository = "Neko-NF/Neko-Status-Mobile",
+                requestedRepository = "neko-nf/neko-status-mobile",
+            ),
+        )
+        assertFalse(
+            shouldPreserveReadyForRepository(
+                hasValidReady = true,
+                storedRepository = "Neko-NF/Neko-Status-Mobile",
+                requestedRepository = "someone/other-updates",
+            ),
+        )
+        assertTrue(
+            shouldKeepReadyAfterCheck(
+                hasValidReady = true,
+                readyVersionCode = 2_000_002,
+                availableVersionCode = 2_000_002,
+            ),
+        )
+        assertTrue(
+            shouldKeepReadyAfterCheck(
+                hasValidReady = true,
+                readyVersionCode = 2_000_002,
+                availableVersionCode = null,
+            ),
+        )
+        assertFalse(
+            shouldKeepReadyAfterCheck(
+                hasValidReady = true,
+                readyVersionCode = 2_000_002,
+                availableVersionCode = 2_000_003,
+            ),
+        )
+    }
+
+    private fun restoredStatus(
+        verified: Boolean,
+        readyFileValid: Boolean,
+        verificationEnqueued: Boolean,
+    ): UpdateStatus =
+        resolveRestoredUpdateStatus(
+            verified = verified,
+            readyFileValid = readyFileValid,
+            storedVersionCode = 2,
+            installedVersionCode = 1,
+            downloadId = 42,
+            verificationEnqueued = verificationEnqueued,
+        )
+}
+
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class UpdatePayloadTest {
@@ -148,6 +297,22 @@ class UpdateInstallNotificationTest {
     }
 
     @Test
+    fun `stale verification task cannot publish install notification`() {
+        val context = RuntimeEnvironment.getApplication()
+        context.getSharedPreferences("neko-update-downloads", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .putLong("download_id", 200)
+            .apply()
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancelAll()
+
+        UpdateManager.postInstallNotificationIfReady(context, downloadId = 100)
+
+        assertTrue(shadowOf(manager).allNotifications.isEmpty())
+    }
+
+    @Test
     fun `install activity finishes immediately`() {
         val activity = Robolectric.buildActivity(UpdateInstallActivity::class.java).create().get()
 
@@ -164,6 +329,8 @@ class UpdateRestoreStateTest {
     @Before
     fun clearPreferences() {
         context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE).edit().clear().commit()
+        UpdateManager.onSettingsChanged(context, UpdateSettings())
+        UpdateManager.restoreState(context)
     }
 
     @After
@@ -191,6 +358,177 @@ class UpdateRestoreStateTest {
         assertFalse(apk.exists())
         assertFalse(prefs.contains("path"))
         assertFalse(prefs.contains("verified"))
+    }
+
+    @Test
+    fun `valid ready update survives later task failures`() {
+        val apk = requireNotNull(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)).resolve(STALE_APK)
+        apk.parentFile?.mkdirs()
+        apk.writeBytes(byteArrayOf(1, 2, 3))
+        val prefs = context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("path", apk.absolutePath)
+            .putLong("size", apk.length())
+            .putLong("version_code", BuildConfig.VERSION_CODE.toLong() + 1)
+            .putString("version", "next")
+            .putString("repository", UpdateSettings.OFFICIAL_REPOSITORY)
+            .putBoolean("verified", true)
+            .commit()
+
+        UpdateManager.restoreState(context)
+        UpdateManager.handleDownloadStartFailure(
+            context = context,
+            repository = UpdateSettings.OFFICIAL_REPOSITORY,
+            error = IOException("new download could not start"),
+        )
+        val handled =
+            UpdateManager.handleVerificationFailure(
+                context = context,
+                downloadId = 42,
+                error = IOException("private diagnostic detail"),
+            )
+
+        assertFalse(handled)
+        assertEquals(UpdateStatus.READY, UpdateManager.uiState.value.status)
+        assertNull(UpdateManager.uiState.value.failureStage)
+        assertNull(UpdateManager.uiState.value.message)
+        assertTrue(apk.exists())
+        assertTrue(prefs.getBoolean("verified", false))
+    }
+
+    @Test
+    fun `verified download is not eligible for duplicate verification work`() {
+        val prefs = context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putLong("download_id", 42)
+            .putBoolean("verified", false)
+            .commit()
+        assertTrue(UpdateManager.isExpectedDownload(context, 42))
+
+        prefs.edit().putBoolean("verified", true).commit()
+
+        assertFalse(UpdateManager.isExpectedDownload(context, 42))
+    }
+
+    @Test
+    fun `stale verification silently leaves replacement download untouched`() =
+        runTest {
+            val prefs = context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putLong("download_id", 200)
+                .putBoolean("verified", false)
+                .commit()
+            val stateBefore = UpdateManager.uiState.value
+
+            UpdateManager.handleDownloadFailure(
+                context = context,
+                downloadId = 100,
+                error = IOException("old download failed"),
+            )
+            val verification = UpdateManager.verifyDownload(context, downloadId = 100)
+            val handled =
+                UpdateManager.handleVerificationFailure(
+                    context = context,
+                    downloadId = 100,
+                    error = IOException("old worker failed"),
+                )
+
+            assertTrue(verification.isSuccess)
+            assertNull(verification.getOrNull())
+            assertFalse(handled)
+            assertEquals(200L, prefs.getLong("download_id", -1L))
+            assertFalse(prefs.getBoolean("verified", false))
+            assertEquals(stateBefore, UpdateManager.uiState.value)
+        }
+
+    @Test
+    fun `verification enqueue failure only affects its current download`() {
+        val prefs = context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putLong("download_id", 200)
+            .putBoolean("verified", false)
+            .putBoolean("verifying", true)
+            .commit()
+        val stateBefore = UpdateManager.uiState.value
+
+        UpdateManager.handleVerificationSchedulingFailure(
+            context = context,
+            downloadId = 100,
+            error = IOException("old enqueue failed"),
+        )
+
+        assertTrue(prefs.getBoolean("verifying", false))
+        assertEquals(stateBefore, UpdateManager.uiState.value)
+
+        UpdateManager.handleVerificationSchedulingFailure(
+            context = context,
+            downloadId = 200,
+            error = IOException("current enqueue failed"),
+        )
+
+        assertFalse(prefs.contains("verifying"))
+        assertEquals(UpdateStatus.ERROR, UpdateManager.uiState.value.status)
+        assertEquals(UpdateFailureStage.VERIFY, UpdateManager.uiState.value.failureStage)
+    }
+
+    @Test
+    fun `interactive check clears refresh feedback after validation failure`() =
+        runTest {
+            val settings =
+                UpdateSettings(
+                    source = UpdateSource.CUSTOM,
+                    customRepository = "invalid",
+                )
+            UpdateManager.onSettingsChanged(context, settings)
+
+            val successful = UpdateManager.performCheck(context, settings, interactive = true)
+
+            assertFalse(successful)
+            assertFalse(UpdateManager.uiState.value.isRefreshing)
+            assertEquals(UpdateStatus.ERROR, UpdateManager.uiState.value.status)
+            assertEquals(UpdateFailureStage.CHECK, UpdateManager.uiState.value.failureStage)
+        }
+
+    @Test
+    fun `download action from previous repository is ignored after source switch`() {
+        UpdateManager.onSettingsChanged(
+            context,
+            UpdateSettings(
+                source = UpdateSource.CUSTOM,
+                customRepository = "someone/new-updates",
+            ),
+        )
+        val oldRepository = "someone/old-updates"
+        val oldUpdate =
+            UpdateInfo(
+                version = "2.0.1",
+                versionCode = BuildConfig.VERSION_CODE.toLong() + 1,
+                packageName = BuildConfig.UPDATE_PACKAGE_NAME,
+                repository = oldRepository,
+                releaseId = 42,
+                apkAsset = "neko-status.apk",
+                apkUrl = "https://github.com/$oldRepository/releases/download/v2.0.1/neko-status.apk",
+                apkSizeBytes = 1_024,
+                releaseUrl = "https://github.com/$oldRepository/releases/tag/v2.0.1",
+                releaseNotes = null,
+                sha256 = "ab".repeat(32),
+                certificateSha256 = "cd".repeat(32),
+            )
+        val stateBefore = UpdateManager.uiState.value
+
+        val enqueued = UpdateManager.enqueueDownload(context, oldUpdate)
+        UpdateManager.handleDownloadStartFailure(
+            context = context,
+            repository = oldRepository,
+            error = IOException("old source failed"),
+        )
+
+        assertFalse(enqueued)
+        assertEquals(stateBefore, UpdateManager.uiState.value)
+        assertFalse(
+            context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+                .contains("download_id"),
+        )
     }
 
     private companion object {
