@@ -88,8 +88,9 @@ jobs:
           if (-not (Test-Path $apkSigner -PathType Leaf)) { throw 'apksigner is missing' }
           if (-not (Test-Path $aapt2 -PathType Leaf)) { throw 'aapt2 is missing' }
 
-          $packageLine = & $aapt2 dump badging $apkName | Select-Object -First 1
+          $badgingOutput = & $aapt2 dump badging $apkName
           if ($LASTEXITCODE -ne 0) { throw 'aapt2 could not inspect the APK' }
+          $packageLine = $badgingOutput | Select-Object -First 1
           if ($packageLine -notmatch "^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)' ") {
             throw 'Could not read package metadata from the APK'
           }
