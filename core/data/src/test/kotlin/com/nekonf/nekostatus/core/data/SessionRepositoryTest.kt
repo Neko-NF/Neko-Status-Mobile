@@ -4,6 +4,8 @@ import com.nekonf.nekostatus.core.model.AuthSession
 import com.nekonf.nekostatus.core.model.DeviceCredential
 import com.nekonf.nekostatus.core.model.UserProfile
 import com.nekonf.nekostatus.core.model.WidgetCredential
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -58,6 +60,36 @@ class SessionRepositoryTest {
         assertNull(restored.widgetCredential.value)
         assertNotNull(store.get("installation_id"))
         assertEquals(installationId, InstallationRepository(store).installationId)
+    }
+
+    @Test
+    fun `replacing the authenticated account drops bound device credentials and emits boundary event`() =
+        runTest {
+            val store = InMemoryCredentialStore()
+            val repository = SessionRepository(store)
+            repository.saveSession(AuthSession("jwt-a", UserProfile(1, "account-a")))
+            repository.saveDeviceCredential(DeviceCredential("device-a"))
+            repository.saveWidgetCredential(WidgetCredential("widget-a"))
+
+            repository.saveSession(AuthSession("jwt-b", UserProfile(2, "account-b")))
+
+            assertEquals("jwt-b", repository.session.value?.token)
+            assertNull(repository.deviceCredential.value)
+            assertNull(repository.widgetCredential.value)
+            assertEquals(AccountBoundaryReason.ACCOUNT_REPLACED, repository.accountBoundaryEvents.first())
+        }
+
+    @Test
+    fun `profile rename for the same user keeps bound credentials`() {
+        val repository = SessionRepository(InMemoryCredentialStore())
+        repository.saveSession(AuthSession("jwt-a", UserProfile(1, "old-name")))
+        repository.saveDeviceCredential(DeviceCredential("device-a"))
+        repository.saveWidgetCredential(WidgetCredential("widget-a"))
+
+        repository.saveSession(AuthSession("jwt-b", UserProfile(1, "new-name")))
+
+        assertEquals("device-a", repository.deviceCredential.value?.deviceKey)
+        assertEquals("widget-a", repository.widgetCredential.value?.token)
     }
 }
 

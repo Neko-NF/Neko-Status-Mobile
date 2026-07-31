@@ -7,7 +7,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Color
 import android.view.View
 import android.widget.RemoteViews
 import com.nekonf.nekostatus.core.data.WidgetCacheSnapshot
@@ -37,21 +36,96 @@ private data class WidgetPalette(
 private val LightWidgetPalette =
     WidgetPalette(
         backgroundDrawable = R.drawable.widget_background_light,
-        onSurface = Color.rgb(22, 23, 25),
-        onSurfaceVariant = Color.rgb(93, 96, 101),
-        primary = Color.rgb(0, 125, 138),
-        away = Color.rgb(179, 119, 0),
-        batteryLow = Color.rgb(186, 26, 26),
+        onSurface = 0xFF161719.toInt(),
+        onSurfaceVariant = 0xFF5D6065.toInt(),
+        primary = 0xFF007D8A.toInt(),
+        away = 0xFFB37700.toInt(),
+        batteryLow = 0xFFBA1A1A.toInt(),
     )
 private val DarkWidgetPalette =
     WidgetPalette(
         backgroundDrawable = R.drawable.widget_background_dark,
-        onSurface = Color.rgb(229, 226, 230),
-        onSurfaceVariant = Color.rgb(199, 198, 202),
-        primary = Color.rgb(115, 216, 226),
-        away = Color.rgb(255, 184, 77),
-        batteryLow = Color.rgb(255, 180, 171),
+        onSurface = 0xFFE5E2E6.toInt(),
+        onSurfaceVariant = 0xFFC7C6CA.toInt(),
+        primary = 0xFF73D8E2.toInt(),
+        away = 0xFFFFB84D.toInt(),
+        batteryLow = 0xFFFFB4AB.toInt(),
     )
+
+internal fun statusDevicePages(
+    devices: List<WidgetDeviceStatus>,
+    selectedDeviceIds: List<String>,
+): List<List<WidgetDeviceStatus>> {
+    if (devices.isEmpty()) return emptyList()
+    val requestedIds = selectedDeviceIds.filter(String::isNotBlank).distinct().take(2)
+    val pageSize = requestedIds.size.takeIf { it > 0 } ?: minOf(2, devices.size)
+    val selected =
+        requestedIds.mapNotNull { id -> devices.firstOrNull { it.deviceId == id } }
+    val firstPage = selected.ifEmpty { devices.take(pageSize) }
+    val remaining = devices.filterNot { device -> firstPage.any { it.deviceId == device.deviceId } }
+    return listOf(firstPage) + remaining.chunked(pageSize)
+}
+
+internal fun screenshotDeviceSequence(
+    devices: List<WidgetDeviceStatus>,
+    targetDeviceId: String?,
+): List<WidgetDeviceStatus> {
+    val available =
+        devices.filter {
+            !it.screenshotThumbnailUrl.isNullOrBlank() || !it.screenshotUrl.isNullOrBlank()
+        }
+    val target = available.firstOrNull { it.deviceId == targetDeviceId }
+    return listOfNotNull(target) + available.filterNot { it.deviceId == target?.deviceId }
+}
+
+private object WidgetPageStateStore {
+    private const val PREFERENCES = "neko-widget-page-state"
+
+    fun current(
+        context: Context,
+        provider: String,
+        appWidgetId: Int,
+        pageCount: Int,
+    ): Int {
+        if (pageCount <= 1) return 0
+        val stored =
+            context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .getInt("$provider:$appWidgetId", 0)
+        return stored.mod(pageCount)
+    }
+
+    fun advance(
+        context: Context,
+        provider: String,
+        appWidgetId: Int,
+        pageCount: Int,
+    ) {
+        if (pageCount <= 1) return
+        val next = (current(context, provider, appWidgetId, pageCount) + 1).mod(pageCount)
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putInt("$provider:$appWidgetId", next)
+            .apply()
+    }
+
+    fun clear(
+        context: Context,
+        provider: String,
+        appWidgetIds: IntArray,
+    ) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .apply { appWidgetIds.forEach { remove("$provider:$it") } }
+            .apply()
+    }
+
+    fun clearAll(context: Context) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+}
 
 private fun widgetPalette(
     context: Context,
@@ -68,12 +142,21 @@ private fun widgetPalette(
 }
 
 object NekoWidgetRenderer {
+    private const val PAGE_PROVIDER = "status"
+
     fun updateAll(context: Context) {
         val manager = AppWidgetManager.getInstance(context)
         val component = ComponentName(context, NekoWidgetReceiver::class.java)
         manager.getAppWidgetIds(component).forEach { appWidgetId ->
-            manager.updateAppWidget(appWidgetId, build(context))
+            manager.updateAppWidget(appWidgetId, build(context, appWidgetId))
         }
+    }
+
+    fun resetPagesAndUpdate(context: Context) {
+        val manager = AppWidgetManager.getInstance(context)
+        val ids = manager.getAppWidgetIds(ComponentName(context, NekoWidgetReceiver::class.java))
+        WidgetPageStateStore.clear(context, PAGE_PROVIDER, ids)
+        update(context, manager, ids)
     }
 
     fun update(
@@ -81,10 +164,33 @@ object NekoWidgetRenderer {
         manager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        appWidgetIds.forEach { appWidgetId -> manager.updateAppWidget(appWidgetId, build(context)) }
+        appWidgetIds.forEach { appWidgetId -> manager.updateAppWidget(appWidgetId, build(context, appWidgetId)) }
     }
 
-    private fun build(context: Context): RemoteViews {
+    fun advance(
+        context: Context,
+        appWidgetId: Int,
+    ) {
+        val settings = WidgetSettingsStore.read(context)
+        val cache = WidgetFeedStore.read(context)
+        val pageCount = statusPages(settings, cache).size
+        WidgetPageStateStore.advance(context, PAGE_PROVIDER, appWidgetId, pageCount)
+        AppWidgetManager.getInstance(context).updateAppWidget(appWidgetId, build(context, appWidgetId))
+    }
+
+    fun clearPages(
+        context: Context,
+        appWidgetIds: IntArray,
+    ) = WidgetPageStateStore.clear(context, PAGE_PROVIDER, appWidgetIds)
+
+    fun clearAllPages(context: Context) {
+        WidgetPageStateStore.clearAll(context)
+    }
+
+    private fun build(
+        context: Context,
+        appWidgetId: Int,
+    ): RemoteViews {
         val settings = WidgetSettingsStore.read(context)
         val cache = WidgetFeedStore.read(context)
         val palette = widgetPalette(context, settings)
@@ -92,14 +198,16 @@ object NekoWidgetRenderer {
             applyPalette(palette, settings.backgroundOpacityPercent)
             setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
             setOnClickPendingIntent(R.id.widget_refresh_container, refreshIntent(context))
+            setViewVisibility(R.id.widget_switch, View.GONE)
             setRefreshFeedback(WidgetRefreshFeedbackStore.isRefreshing(context))
             setTextViewText(R.id.widget_updated, cache.updatedLabel(context))
-            renderContent(context, settings, cache, palette)
+            renderContent(context, appWidgetId, settings, cache, palette)
         }
     }
 
     private fun RemoteViews.renderContent(
         context: Context,
+        appWidgetId: Int,
         settings: WidgetSettings,
         cache: WidgetCacheSnapshot,
         palette: WidgetPalette,
@@ -114,7 +222,13 @@ object NekoWidgetRenderer {
                     feed.users.firstOrNull { it.userId == settings.targetUserId }
                         ?: feed.users.first()
                 setTextViewText(R.id.widget_title, user.username)
-                val devices = user.devices.take(2)
+                val pages = statusDevicePages(user.devices, settings.selectedDeviceIds)
+                val pageIndex = WidgetPageStateStore.current(context, PAGE_PROVIDER, appWidgetId, pages.size)
+                val devices = pages.getOrNull(pageIndex).orEmpty()
+                if (settings.showDeviceSwitcher && pages.size > 1) {
+                    setViewVisibility(R.id.widget_switch, View.VISIBLE)
+                    setOnClickPendingIntent(R.id.widget_switch, switchIntent(context, appWidgetId))
+                }
                 if (devices.isEmpty()) {
                     showMessage(context.getString(R.string.widget_no_devices))
                 } else {
@@ -141,6 +255,17 @@ object NekoWidgetRenderer {
                 }
             }
         }
+    }
+
+    private fun statusPages(
+        settings: WidgetSettings,
+        cache: WidgetCacheSnapshot,
+    ): List<List<WidgetDeviceStatus>> {
+        if (settings.displayMode != WidgetDisplayMode.SINGLE) return emptyList()
+        val user =
+            cache.feed?.users?.firstOrNull { it.userId == settings.targetUserId }
+                ?: cache.feed?.users?.firstOrNull()
+        return statusDevicePages(user?.devices.orEmpty(), settings.selectedDeviceIds)
     }
 
     private fun RemoteViews.renderUserRow(
@@ -321,6 +446,19 @@ object NekoWidgetRenderer {
             Intent(context, NekoWidgetReceiver::class.java).setAction(NekoWidgetReceiver.ACTION_REFRESH),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    private fun switchIntent(
+        context: Context,
+        appWidgetId: Int,
+    ): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            100_000 + appWidgetId,
+            Intent(context, NekoWidgetReceiver::class.java)
+                .setAction(NekoWidgetReceiver.ACTION_SWITCH)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 }
 
 private data class WidgetRowIds(
@@ -407,12 +545,21 @@ private fun WidgetDeviceStatus.batteryColor(palette: WidgetPalette): Int =
     }
 
 object NekoSnapshotWidgetRenderer {
+    private const val PAGE_PROVIDER = "snapshot"
+
     fun updateAll(context: Context) {
         val manager = AppWidgetManager.getInstance(context)
         val component = ComponentName(context, NekoSnapshotWidgetReceiver::class.java)
         manager.getAppWidgetIds(component).forEach { appWidgetId ->
-            manager.updateAppWidget(appWidgetId, build(context))
+            manager.updateAppWidget(appWidgetId, build(context, appWidgetId))
         }
+    }
+
+    fun resetPagesAndUpdate(context: Context) {
+        val manager = AppWidgetManager.getInstance(context)
+        val ids = manager.getAppWidgetIds(ComponentName(context, NekoSnapshotWidgetReceiver::class.java))
+        WidgetPageStateStore.clear(context, PAGE_PROVIDER, ids)
+        update(context, manager, ids)
     }
 
     fun update(
@@ -420,10 +567,29 @@ object NekoSnapshotWidgetRenderer {
         manager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        appWidgetIds.forEach { appWidgetId -> manager.updateAppWidget(appWidgetId, build(context)) }
+        appWidgetIds.forEach { appWidgetId -> manager.updateAppWidget(appWidgetId, build(context, appWidgetId)) }
     }
 
-    private fun build(context: Context): RemoteViews {
+    fun advance(
+        context: Context,
+        appWidgetId: Int,
+    ) {
+        val settings = WidgetSettingsStore.read(context)
+        val cache = WidgetFeedStore.read(context)
+        val pageCount = selectSnapshotDevices(cache, settings).devices.size
+        WidgetPageStateStore.advance(context, PAGE_PROVIDER, appWidgetId, pageCount)
+        AppWidgetManager.getInstance(context).updateAppWidget(appWidgetId, build(context, appWidgetId))
+    }
+
+    fun clearPages(
+        context: Context,
+        appWidgetIds: IntArray,
+    ) = WidgetPageStateStore.clear(context, PAGE_PROVIDER, appWidgetIds)
+
+    private fun build(
+        context: Context,
+        appWidgetId: Int,
+    ): RemoteViews {
         val settings = WidgetSettingsStore.read(context)
         val cache = WidgetFeedStore.read(context)
         val palette = widgetPalette(context, settings)
@@ -431,19 +597,24 @@ object NekoSnapshotWidgetRenderer {
             applySnapshotPalette(palette, settings.backgroundOpacityPercent)
             setOnClickPendingIntent(R.id.snapshot_widget_root, snapshotOpenAppIntent(context))
             setOnClickPendingIntent(R.id.snapshot_widget_refresh_container, snapshotRefreshIntent(context))
+            setViewVisibility(R.id.snapshot_widget_switch, View.GONE)
             setSnapshotRefreshFeedback(WidgetRefreshFeedbackStore.isRefreshing(context))
-            renderSnapshot(context, settings, cache, palette)
+            renderSnapshot(context, appWidgetId, settings, cache, palette)
         }
     }
 
     private fun RemoteViews.renderSnapshot(
         context: Context,
+        appWidgetId: Int,
         settings: WidgetSettings,
         cache: WidgetCacheSnapshot,
         palette: WidgetPalette,
     ) {
         val feed = cache.feed
-        val target = selectSnapshotTarget(cache, settings)
+        val selection = selectSnapshotDevices(cache, settings)
+        val pageIndex =
+            WidgetPageStateStore.current(context, PAGE_PROVIDER, appWidgetId, selection.devices.size)
+        val target = SnapshotTarget(selection.user, selection.devices.getOrNull(pageIndex))
         val user = target.user
         val device = target.device
         when {
@@ -455,52 +626,67 @@ object NekoSnapshotWidgetRenderer {
             user == null -> showSnapshotMessage(context.getString(R.string.widget_no_visible_users), showInfo = false)
             device == null -> showSnapshotMessage(context.getString(R.string.widget_no_devices), showInfo = false)
             else -> {
+                if (settings.showDeviceSwitcher && selection.devices.size > 1) {
+                    setViewVisibility(R.id.snapshot_widget_switch, View.VISIBLE)
+                    setOnClickPendingIntent(R.id.snapshot_widget_switch, snapshotSwitchIntent(context, appWidgetId))
+                }
                 setTextViewText(R.id.snapshot_widget_title, user.username)
                 setTextViewText(R.id.snapshot_widget_updated, device.snapshotUpdatedLabel(context, cache))
                 renderSnapshotDevice(context, device, settings, palette)
-                val source = device.screenshotThumbnailUrl ?: device.screenshotUrl
-                val bitmap =
-                    WidgetImageCache.readFitted(
-                        context = context,
-                        source = source,
-                        cacheKey = device.screenshotCacheKey(),
-                        maxWidthPx = 512,
-                        maxHeightPx = 300,
-                    )
-                when {
-                    source.isNullOrBlank() -> showSnapshotMessage(context.getString(R.string.widget_no_screenshot), showInfo = true)
-                    bitmap == null ->
-                        showSnapshotMessage(context.getString(R.string.widget_screenshot_cache_waiting), showInfo = true)
-                    else -> {
-                        setImageViewBitmap(R.id.snapshot_widget_image, bitmap)
-                        setViewVisibility(R.id.snapshot_widget_image, View.VISIBLE)
-                        setViewVisibility(R.id.snapshot_widget_message, View.GONE)
-                        setViewVisibility(R.id.snapshot_widget_info, View.VISIBLE)
-                    }
-                }
+                val screenshotRendered = renderSnapshotImage(context, device)
                 setViewVisibility(
                     R.id.snapshot_widget_stale,
-                    if (cache.errorCode == null || bitmap == null) View.GONE else View.VISIBLE,
+                    if (cache.errorCode == null || !screenshotRendered) View.GONE else View.VISIBLE,
                 )
             }
         }
     }
 
-    private fun selectSnapshotTarget(
+    private fun RemoteViews.renderSnapshotImage(
+        context: Context,
+        device: WidgetDeviceStatus,
+    ): Boolean {
+        val source = device.screenshotThumbnailUrl ?: device.screenshotUrl
+        val bitmap =
+            WidgetImageCache.readFitted(
+                context = context,
+                source = source,
+                cacheKey = device.screenshotCacheKey(),
+                maxWidthPx = 512,
+                maxHeightPx = 300,
+            )
+        when {
+            source.isNullOrBlank() ->
+                showSnapshotMessage(context.getString(R.string.widget_no_screenshot), showInfo = true)
+            bitmap == null ->
+                showSnapshotMessage(context.getString(R.string.widget_screenshot_cache_waiting), showInfo = true)
+            else -> {
+                setImageViewBitmap(R.id.snapshot_widget_image, bitmap)
+                setViewVisibility(R.id.snapshot_widget_image, View.VISIBLE)
+                setViewVisibility(R.id.snapshot_widget_message, View.GONE)
+                setViewVisibility(R.id.snapshot_widget_info, View.VISIBLE)
+            }
+        }
+        return bitmap != null
+    }
+
+    private fun selectSnapshotDevices(
         cache: WidgetCacheSnapshot,
         settings: WidgetSettings,
-    ): SnapshotTarget {
+    ): SnapshotDeviceSelection {
         val feed = cache.feed
         val user =
             feed?.users?.firstOrNull { it.userId == settings.targetUserId }
                 ?: feed?.users?.firstOrNull()
-        val device =
-            user?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
-                ?: user?.devices?.firstOrNull {
-                    !it.screenshotThumbnailUrl.isNullOrBlank() || !it.screenshotUrl.isNullOrBlank()
-                }
-                ?: user?.devices?.firstOrNull()
-        return SnapshotTarget(user, device)
+        val screenshotDevices = screenshotDeviceSequence(user?.devices.orEmpty(), settings.targetDeviceId)
+        val devices =
+            screenshotDevices.ifEmpty {
+                listOfNotNull(
+                    user?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
+                        ?: user?.devices?.firstOrNull(),
+                )
+            }
+        return SnapshotDeviceSelection(user, devices)
     }
 
     private fun RemoteViews.renderSnapshotDevice(
@@ -607,11 +793,29 @@ object NekoSnapshotWidgetRenderer {
             Intent(context, NekoSnapshotWidgetReceiver::class.java).setAction(NekoSnapshotWidgetReceiver.ACTION_REFRESH),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    private fun snapshotSwitchIntent(
+        context: Context,
+        appWidgetId: Int,
+    ): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            200_000 + appWidgetId,
+            Intent(context, NekoSnapshotWidgetReceiver::class.java)
+                .setAction(NekoSnapshotWidgetReceiver.ACTION_SWITCH)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 }
 
 private data class SnapshotTarget(
     val user: WidgetUserStatus?,
     val device: WidgetDeviceStatus?,
+)
+
+private data class SnapshotDeviceSelection(
+    val user: WidgetUserStatus?,
+    val devices: List<WidgetDeviceStatus>,
 )
 
 private fun WidgetDeviceStatus.screenshotCacheKey(): String {
@@ -633,15 +837,34 @@ class NekoWidgetReceiver : AppWidgetProvider() {
         context: Context,
         intent: Intent,
     ) {
-        if (intent.action == ACTION_REFRESH) {
-            WidgetRefreshScheduler.refreshNow(context)
-            return
+        when (intent.action) {
+            ACTION_REFRESH -> {
+                WidgetRefreshScheduler.refreshNow(context)
+                return
+            }
+            ACTION_SWITCH -> {
+                val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+                val validIds =
+                    AppWidgetManager.getInstance(context)
+                        .getAppWidgetIds(ComponentName(context, NekoWidgetReceiver::class.java))
+                if (appWidgetId in validIds) NekoWidgetRenderer.advance(context, appWidgetId)
+                return
+            }
         }
         super.onReceive(context, intent)
     }
 
+    override fun onDeleted(
+        context: Context,
+        appWidgetIds: IntArray,
+    ) {
+        NekoWidgetRenderer.clearPages(context, appWidgetIds)
+        super.onDeleted(context, appWidgetIds)
+    }
+
     companion object {
         const val ACTION_REFRESH = "com.nekonf.nekostatus.action.REFRESH_WIDGET"
+        const val ACTION_SWITCH = "com.nekonf.nekostatus.action.SWITCH_WIDGET_DEVICE"
     }
 }
 
@@ -659,14 +882,33 @@ class NekoSnapshotWidgetReceiver : AppWidgetProvider() {
         context: Context,
         intent: Intent,
     ) {
-        if (intent.action == ACTION_REFRESH) {
-            WidgetRefreshScheduler.refreshNow(context)
-            return
+        when (intent.action) {
+            ACTION_REFRESH -> {
+                WidgetRefreshScheduler.refreshNow(context)
+                return
+            }
+            ACTION_SWITCH -> {
+                val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+                val validIds =
+                    AppWidgetManager.getInstance(context)
+                        .getAppWidgetIds(ComponentName(context, NekoSnapshotWidgetReceiver::class.java))
+                if (appWidgetId in validIds) NekoSnapshotWidgetRenderer.advance(context, appWidgetId)
+                return
+            }
         }
         super.onReceive(context, intent)
     }
 
+    override fun onDeleted(
+        context: Context,
+        appWidgetIds: IntArray,
+    ) {
+        NekoSnapshotWidgetRenderer.clearPages(context, appWidgetIds)
+        super.onDeleted(context, appWidgetIds)
+    }
+
     companion object {
         const val ACTION_REFRESH = "com.nekonf.nekostatus.action.REFRESH_SNAPSHOT_WIDGET"
+        const val ACTION_SWITCH = "com.nekonf.nekostatus.action.SWITCH_SNAPSHOT_WIDGET_DEVICE"
     }
 }

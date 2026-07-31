@@ -8,6 +8,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,11 +21,14 @@ object WidgetSettingsStore {
     private const val DISPLAY_MODE = "display_mode"
     private const val TARGET_USER_ID = "target_user_id"
     private const val TARGET_DEVICE_ID = "target_device_id"
+    private const val SELECTED_DEVICE_IDS = "selected_device_ids"
+    private const val SHOW_DEVICE_SWITCHER = "show_device_switcher"
     private const val THEME = "theme"
     private const val BACKGROUND_OPACITY = "background_opacity"
     private const val SHOW_MUSIC = "show_music"
     private const val SHOW_ICONS = "show_icons"
     private const val SHOW_SCREENSHOT = "show_screenshot"
+    private val json = Json { ignoreUnknownKeys = true }
 
     fun read(context: Context): WidgetSettings {
         val values = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
@@ -32,6 +38,14 @@ object WidgetSettingsStore {
             displayMode = values.enumValue(DISPLAY_MODE, WidgetDisplayMode.ALL),
             targetUserId = values.getString(TARGET_USER_ID, null),
             targetDeviceId = values.getString(TARGET_DEVICE_ID, null),
+            selectedDeviceIds =
+                values.getString(SELECTED_DEVICE_IDS, null)
+                    ?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+                    .orEmpty()
+                    .filter(String::isNotBlank)
+                    .distinct()
+                    .take(2),
+            showDeviceSwitcher = values.getBoolean(SHOW_DEVICE_SWITCHER, true),
             theme = values.enumValue(THEME, WidgetTheme.SYSTEM),
             backgroundOpacityPercent = values.getInt(BACKGROUND_OPACITY, 90).coerceIn(50, 100),
             showMusic = values.getBoolean(SHOW_MUSIC, true),
@@ -50,6 +64,8 @@ object WidgetSettingsStore {
             .putString(DISPLAY_MODE, settings.displayMode.name)
             .putString(TARGET_USER_ID, settings.targetUserId)
             .putString(TARGET_DEVICE_ID, settings.targetDeviceId)
+            .putString(SELECTED_DEVICE_IDS, json.encodeToString(settings.selectedDeviceIds.distinct().take(2)))
+            .putBoolean(SHOW_DEVICE_SWITCHER, settings.showDeviceSwitcher)
             .putString(THEME, settings.theme.name)
             .putInt(BACKGROUND_OPACITY, settings.backgroundOpacityPercent.coerceIn(50, 100))
             .putBoolean(SHOW_MUSIC, settings.showMusic)
@@ -77,4 +93,18 @@ class WidgetSettingsRepository
             WidgetSettingsStore.write(context, settings)
             _settings.value = settings
         }
+
+        fun resetAccountScope() {
+            update(_settings.value.withResetAccountScope())
+        }
     }
+
+internal fun WidgetSettings.withResetAccountScope(): WidgetSettings =
+    WidgetSettings(
+        refreshIntervalMinutes = refreshIntervalMinutes,
+        showDeviceSwitcher = showDeviceSwitcher,
+        theme = theme,
+        backgroundOpacityPercent = backgroundOpacityPercent,
+        showMusic = showMusic,
+        showIcons = showIcons,
+    )

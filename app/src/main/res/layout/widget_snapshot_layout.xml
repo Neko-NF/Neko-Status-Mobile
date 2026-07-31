@@ -43,6 +43,15 @@
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
+            <ImageView
+                android:id="@+id/snapshot_widget_switch"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:contentDescription="@string/widget_switch_device"
+                android:padding="7dp"
+                android:src="@drawable/ic_widget_cycle"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/snapshot_widget_updated"
                 android:layout_width="wrap_content"

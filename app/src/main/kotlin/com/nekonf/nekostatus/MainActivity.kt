@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
+        handleKeepAliveIntent(intent)
         enableEdgeToEdge()
         setContent {
             val state by appViewModel.uiState.collectAsState()
@@ -91,6 +92,20 @@ class MainActivity : ComponentActivity() {
             NekoTheme(darkTheme = dark, dynamicColor = state.dynamicColor) {
                 NekoApp(state, appViewModel::completeOnboarding)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleKeepAliveIntent(intent)
+    }
+
+    private fun handleKeepAliveIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(KeepAliveReminderScheduler.EXTRA_RESUME_REPORTING, false) == true) {
+            intent.removeExtra(KeepAliveReminderScheduler.EXTRA_RESUME_REPORTING)
+            KeepAliveReminderNotifier.dismiss(this)
+            ReportingService.start(this)
         }
     }
 }
@@ -237,6 +252,8 @@ private fun MainShell(
                     onReportingStopRequired = { ReportingService.stopImmediately(context) },
                     onWidgetScheduleChanged = { enabled, interval ->
                         WidgetRefreshScheduler.sync(context, enabled, interval)
+                        NekoWidgetRenderer.resetPagesAndUpdate(context)
+                        NekoSnapshotWidgetRenderer.resetPagesAndUpdate(context)
                     },
                     onWidgetRefreshRequested = { WidgetRefreshScheduler.refreshNow(context) },
                 )

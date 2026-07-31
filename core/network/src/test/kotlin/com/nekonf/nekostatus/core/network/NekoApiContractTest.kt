@@ -89,6 +89,37 @@ class NekoApiContractTest {
         }
 
     @Test
+    fun `profile update sends editable identity fields`() =
+        runTest {
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"success":true,"user":{"id":1,"username":"renamed","email":"new@example.test"}}"""),
+            )
+
+            api.updateProfile(
+                "Bearer jwt",
+                ProfileUpdateRequest(
+                    username = "renamed",
+                    email = "new@example.test",
+                    avatar = "data:image/jpeg;base64,YXZhdGFy",
+                    currentPassword = "old-secret",
+                    newPassword = "new-secret",
+                ),
+            )
+            val request = server.takeRequest()
+            val body = request.body.readUtf8()
+
+            assertEquals("/api/auth/profile", request.path)
+            assertEquals("Bearer jwt", request.getHeader("Authorization"))
+            assertTrue(body.contains("\"username\":\"renamed\""))
+            assertTrue(body.contains("\"email\":\"new@example.test\""))
+            assertTrue(body.contains("\"avatar\":\"data:image/jpeg;base64,YXZhdGFy\""))
+            assertTrue(body.contains("\"currentPassword\":\"old-secret\""))
+            assertTrue(body.contains("\"newPassword\":\"new-secret\""))
+        }
+
+    @Test
     fun `status payload matches checked in golden request`() {
         val json =
             Json {

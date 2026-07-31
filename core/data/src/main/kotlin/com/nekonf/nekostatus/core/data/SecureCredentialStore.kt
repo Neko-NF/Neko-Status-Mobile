@@ -15,9 +15,11 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import javax.inject.Inject
@@ -32,6 +34,12 @@ interface CredentialStore {
     fun get(key: String): String?
 
     fun clear(keys: Iterable<String>)
+}
+
+enum class AccountBoundaryReason {
+    LOGOUT,
+    ACCESS_REVOKED,
+    ACCOUNT_REPLACED,
 }
 
 @Singleton
@@ -88,12 +96,29 @@ class SessionRepository
         private val _session = MutableStateFlow(loadSession())
         private val _deviceCredential = MutableStateFlow(loadDeviceCredential())
         private val _widgetCredential = MutableStateFlow(loadWidgetCredential())
+        private val accountBoundaryChannel = Channel<AccountBoundaryReason>(Channel.BUFFERED)
 
         val session: StateFlow<AuthSession?> = _session.asStateFlow()
         val deviceCredential: StateFlow<DeviceCredential?> = _deviceCredential.asStateFlow()
         val widgetCredential: StateFlow<WidgetCredential?> = _widgetCredential.asStateFlow()
+        val accountBoundaryEvents = accountBoundaryChannel.receiveAsFlow()
 
-        fun saveSession(session: AuthSession) {
+        fun saveSession(
+            session: AuthSession,
+            preserveAccountBinding: Boolean = false,
+        ) {
+            val previous = _session.value
+            val replacesAccount =
+                !preserveAccountBinding &&
+                    when {
+                        previous == null -> _deviceCredential.value != null || _widgetCredential.value != null
+                        previous.user.id != null && session.user.id != null -> previous.user.id != session.user.id
+                        else -> previous.user.username != session.user.username
+                    }
+            if (replacesAccount) {
+                clearBoundCredentials()
+                accountBoundaryChannel.trySend(AccountBoundaryReason.ACCOUNT_REPLACED)
+            }
             secureStore.put("auth_token", session.token)
             secureStore.put("user_id", session.user.id?.toString())
             secureStore.put("username", session.user.username)
@@ -118,11 +143,12 @@ class SessionRepository
             _widgetCredential.value = credential
         }
 
-        fun clearAccountAccess() {
+        fun clearAccountAccess(reason: AccountBoundaryReason = AccountBoundaryReason.ACCESS_REVOKED) {
             secureStore.clear(ACCOUNT_ACCESS_KEYS)
             _session.value = null
             _deviceCredential.value = null
             _widgetCredential.value = null
+            accountBoundaryChannel.trySend(reason)
         }
 
         fun clearWidgetCredential() {
@@ -133,6 +159,13 @@ class SessionRepository
         fun clearAll() {
             secureStore.clear(ALL_CREDENTIAL_KEYS)
             _session.value = null
+            _deviceCredential.value = null
+            _widgetCredential.value = null
+            accountBoundaryChannel.trySend(AccountBoundaryReason.LOGOUT)
+        }
+
+        private fun clearBoundCredentials() {
+            secureStore.clear(DEVICE_CREDENTIAL_KEYS + WIDGET_CREDENTIAL_KEYS)
             _deviceCredential.value = null
             _widgetCredential.value = null
         }
@@ -173,13 +206,16 @@ class SessionRepository
 
         private companion object {
             const val WIDGET_TOKEN = "widget_token"
-            val AUTHENTICATION_KEYS =
+            val SESSION_KEYS =
                 setOf(
                     "auth_token",
                     "user_id",
                     "username",
                     "user_email",
                     "user_avatar",
+                )
+            val DEVICE_CREDENTIAL_KEYS =
+                setOf(
                     "device_key",
                     "device_id",
                     "device_name",
@@ -192,6 +228,7 @@ class SessionRepository
                     "widget_user_type",
                     "widget_expires_at",
                 )
+            val AUTHENTICATION_KEYS = SESSION_KEYS + DEVICE_CREDENTIAL_KEYS
             val ACCOUNT_ACCESS_KEYS = AUTHENTICATION_KEYS + WIDGET_CREDENTIAL_KEYS
             val ALL_CREDENTIAL_KEYS = ACCOUNT_ACCESS_KEYS
         }

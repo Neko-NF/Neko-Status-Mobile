@@ -11,6 +11,7 @@ import com.nekonf.nekostatus.core.data.WidgetRepository
 import com.nekonf.nekostatus.core.data.WidgetSettingsRepository
 import com.nekonf.nekostatus.core.database.DiagnosticLogEntity
 import com.nekonf.nekostatus.core.model.OperationResult
+import com.nekonf.nekostatus.core.model.ProfileUpdate
 import com.nekonf.nekostatus.core.model.ReportingHealth
 import com.nekonf.nekostatus.core.model.ReportingSettings
 import com.nekonf.nekostatus.core.model.ServerConfig
@@ -21,6 +22,7 @@ import com.nekonf.nekostatus.core.model.WidgetFeedState
 import com.nekonf.nekostatus.core.model.WidgetSettings
 import com.nekonf.nekostatus.core.model.normalizeGitHubRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -40,10 +42,16 @@ data class SettingsUiState(
     val widgetFeedState: WidgetFeedState = WidgetFeedState(),
     val widgetUsername: String? = null,
     val widgetUserType: String? = null,
+    val profileSaving: Boolean = false,
+    val profileSaved: Boolean = false,
+    val profileError: String? = null,
+    val passwordSaving: Boolean = false,
+    val passwordSaved: Boolean = false,
+    val passwordError: String? = null,
 )
 
 @HiltViewModel
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "TooManyFunctions")
 class SettingsViewModel
     @Inject
     constructor(
@@ -53,8 +61,11 @@ class SettingsViewModel
         private val diagnosticsRepository: DiagnosticsRepository,
         private val widgetSettingsRepository: WidgetSettingsRepository,
         private val widgetRepository: WidgetRepository,
-        reportingStateStore: ReportingStateStore,
+        private val reportingStateStore: ReportingStateStore,
     ) : ViewModel() {
+        private val profileState = MutableStateFlow(ProfileOperationState())
+        private val passwordState = MutableStateFlow(ProfileOperationState())
+
         val uiState: StateFlow<SettingsUiState> =
             combine(
                 settingsRepository.themeMode,
@@ -74,11 +85,35 @@ class SettingsViewModel
                 state.copy(widgetFeedState = widgetFeedState)
             }.combine(sessionRepository.widgetCredential) { state, credential ->
                 state.copy(widgetUsername = credential?.username, widgetUserType = credential?.userType)
+            }.combine(profileState) { state, profile ->
+                state.copy(
+                    profileSaving = profile.saving,
+                    profileSaved = profile.saved,
+                    profileError = profile.error,
+                )
+            }.combine(passwordState) { state, password ->
+                state.copy(
+                    passwordSaving = password.saving,
+                    passwordSaved = password.saved,
+                    passwordError = password.error,
+                )
             }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
         val logs: StateFlow<List<DiagnosticLogEntity>> =
             diagnosticsRepository.logs
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+        init {
+            viewModelScope.launch {
+                when (val result = authRepository.restoreProfile()) {
+                    is OperationResult.Success -> Unit
+                    is OperationResult.Failure ->
+                        if (result.code !in setOf("NO_SESSION", "NETWORK_ERROR")) {
+                            profileState.value = ProfileOperationState(error = result.message)
+                        }
+                }
+            }
+        }
 
         fun setTheme(
             mode: String,
@@ -92,7 +127,9 @@ class SettingsViewModel
                 val serverChanged = config.activeUrl != uiState.value.serverConfig.activeUrl
                 if (serverChanged) {
                     settingsRepository.updateReporting(uiState.value.reportingSettings.copy(enabled = false))
+                    widgetSettingsRepository.resetAccountScope()
                     widgetRepository.clear()
+                    reportingStateStore.reset()
                     sessionRepository.clearAccountAccess()
                 }
                 settingsRepository.updateServer(config)
@@ -116,10 +153,10 @@ class SettingsViewModel
             }
             viewModelScope.launch {
                 val settings = widgetSettingsRepository.settings.value.copy(enabled = true)
-                when (widgetRepository.refresh(settings)) {
+                when (val result = widgetRepository.refresh(settings)) {
                     is OperationResult.Success -> {
                         val credential = sessionRepository.widgetCredential.value
-                        val normalized =
+                        val accessNormalized =
                             if (credential?.userType == "admin") {
                                 settings
                             } else {
@@ -128,6 +165,32 @@ class SettingsViewModel
                                     targetUserId = credential?.userId,
                                 )
                             }
+                        val selectedUser =
+                            result.value.users.firstOrNull { it.userId == accessNormalized.targetUserId }
+                                ?: result.value.users.firstOrNull()
+                        val validSelectedIds =
+                            accessNormalized.selectedDeviceIds.filter { selectedId ->
+                                selectedUser?.devices?.any { it.deviceId == selectedId } == true
+                            }
+                        val normalized =
+                            accessNormalized.copy(
+                                targetUserId =
+                                    accessNormalized.targetUserId
+                                        ?: selectedUser?.userId,
+                                selectedDeviceIds =
+                                    validSelectedIds.ifEmpty {
+                                        selectedUser?.devices.orEmpty().take(2).map { it.deviceId }
+                                    },
+                                targetDeviceId =
+                                    selectedUser?.devices?.firstOrNull {
+                                        it.deviceId == accessNormalized.targetDeviceId
+                                    }?.deviceId
+                                        ?: selectedUser?.devices?.firstOrNull {
+                                            !it.screenshotThumbnailUrl.isNullOrBlank() ||
+                                                !it.screenshotUrl.isNullOrBlank()
+                                        }?.deviceId
+                                        ?: selectedUser?.devices?.firstOrNull()?.deviceId,
+                            )
                         widgetSettingsRepository.update(normalized)
                         onChanged(true)
                     }
@@ -145,6 +208,55 @@ class SettingsViewModel
 
         fun updateReportingSettings(settings: ReportingSettings) {
             viewModelScope.launch { settingsRepository.updateReporting(settings) }
+        }
+
+        fun saveProfile(
+            username: String,
+            email: String,
+            avatar: String?,
+        ) {
+            profileState.value = ProfileOperationState(saving = true)
+            viewModelScope.launch {
+                when (
+                    val result =
+                        authRepository.updateProfile(
+                            ProfileUpdate(
+                                username = username,
+                                email = email,
+                                avatar = avatar,
+                            ),
+                        )
+                ) {
+                    is OperationResult.Success -> {
+                        profileState.value = ProfileOperationState(saved = true)
+                        if (widgetSettingsRepository.settings.value.enabled) {
+                            widgetRepository.refresh(widgetSettingsRepository.settings.value)
+                        }
+                    }
+                    is OperationResult.Failure -> profileState.value = ProfileOperationState(error = result.message)
+                }
+            }
+        }
+
+        fun changePassword(
+            currentPassword: String,
+            newPassword: String,
+        ) {
+            passwordState.value = ProfileOperationState(saving = true)
+            viewModelScope.launch {
+                when (
+                    val result =
+                        authRepository.updateProfile(
+                            ProfileUpdate(
+                                currentPassword = currentPassword,
+                                newPassword = newPassword,
+                            ),
+                        )
+                ) {
+                    is OperationResult.Success -> passwordState.value = ProfileOperationState(saved = true)
+                    is OperationResult.Failure -> passwordState.value = ProfileOperationState(error = result.message)
+                }
+            }
         }
 
         fun setAutomaticUpdates(
@@ -176,11 +288,14 @@ class SettingsViewModel
             }
         }
 
-        fun logout() {
+        fun logout(onComplete: () -> Unit = {}) {
             viewModelScope.launch {
                 settingsRepository.updateReporting(uiState.value.reportingSettings.copy(enabled = false))
+                widgetSettingsRepository.resetAccountScope()
                 widgetRepository.clear()
+                reportingStateStore.reset()
                 authRepository.logout()
+                onComplete()
             }
         }
 
@@ -188,3 +303,9 @@ class SettingsViewModel
             viewModelScope.launch { diagnosticsRepository.clear() }
         }
     }
+
+private data class ProfileOperationState(
+    val saving: Boolean = false,
+    val saved: Boolean = false,
+    val error: String? = null,
+)

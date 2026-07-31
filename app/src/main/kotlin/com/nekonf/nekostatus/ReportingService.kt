@@ -95,6 +95,14 @@ class ReportingService : Service() {
                 stopReporting(explicit = true, reportOffline = true)
                 return START_NOT_STICKY
             }
+            ACTION_KEEP_ALIVE -> {
+                KeepAliveReminderNotifier.dismiss(this)
+                scope.launch {
+                    val settings = settingsRepository.reportingSettings.first()
+                    settingsRepository.updateReporting(settings.copy(enabled = true))
+                    triggers.trySend(Unit)
+                }
+            }
             else ->
                 scope.launch {
                     val settings = settingsRepository.reportingSettings.first()
@@ -280,6 +288,7 @@ class ReportingService : Service() {
         private const val NOTIFICATION_ID = 2001
         private const val ACTION_START = "com.nekonf.nekostatus.action.START"
         private const val ACTION_STOP = "com.nekonf.nekostatus.action.STOP"
+        internal const val ACTION_KEEP_ALIVE = "com.nekonf.nekostatus.action.KEEP_ALIVE"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, ReportingService::class.java).setAction(ACTION_START))

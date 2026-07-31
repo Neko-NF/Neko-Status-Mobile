@@ -7,7 +7,8 @@
 
 UI 通过 ViewModel 和 `StateFlow` 单向读取状态。网络调用统一经 Retrofit/OkHttp，服务端
 未支持的扩展端点由缓存的 `ServerCapabilities` 门控。`ReportingService` 是唯一连续运行的
-服务，WorkManager 与广播只负责合规恢复。
+服务，WorkManager 与广播只负责合规恢复。可选的保活提醒由 WorkManager 按 6、12、24 或
+48 小时调度；通知只引导用户主动恢复前台服务，不尝试绕过系统后台限制。
 
 凭据的所有权分离为认证会话 JWT、设备上报密钥和预留的小组件令牌。诊断日志在写入 Room
 前进行脱敏；普通 DataStore 不存储任何敏感值。
@@ -21,8 +22,10 @@ UI 通过 ViewModel 和 `StateFlow` 单向读取状态。网络调用统一经 R
 
 两种 Provider 共享 `WidgetSettingsStore`、`WidgetFeedStore` 与 `WidgetRefreshWorker`。
 WorkManager 的周期下限保持 15 分钟；手动刷新使用唯一一次性工作，成功或失败后都刷新两种
-Provider。截图只预热当前选中设备，按比例解码并限制尺寸，避免超过 Launcher 的
-`RemoteViews` Binder 位图预算。已有 4×2 实例不会被静默迁移或调整为 4×4。
+Provider。4×2 可固定一至两台首屏设备，并为每个微件实例独立保存切换页；4×4 在有多台
+可用截图设备时采用相同的实例级切换。切换入口可由用户隐藏。Worker 预热可切换设备的截图，
+按比例解码并限制尺寸，避免超过 Launcher 的 `RemoteViews` Binder 位图预算。已有 4×2
+实例不会被静默迁移或调整为 4×4。
 
 ## 更新边界
 

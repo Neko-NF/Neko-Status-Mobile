@@ -20,6 +20,36 @@ paths:
       summary: Register with username and password
       responses:
         '200': { description: Authentication response }
+  /api/auth/me:
+    get:
+      summary: Read the authenticated user's profile
+      security: [{ sessionBearer: [] }]
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/ApiError' }
+        '403': { $ref: '#/components/responses/ApiError' }
+  /api/auth/profile:
+    put:
+      summary: Update the authenticated user's profile
+      security: [{ sessionBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdateRequest' }
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ApiError' }
+        '401': { $ref: '#/components/responses/ApiError' }
+        '403': { $ref: '#/components/responses/ApiError' }
   /api/auth/device-key:
     post:
       summary: Create or recover a device key
@@ -103,6 +133,7 @@ paths:
         '501': { description: Widget status capability is not implemented by this server }
 components:
   securitySchemes:
+    sessionBearer: { type: http, scheme: bearer }
     deviceBearer: { type: http, scheme: bearer }
     widgetBearer: { type: http, scheme: bearer }
   responses:
@@ -126,6 +157,33 @@ components:
       properties:
         username: { type: string }
         password: { type: string, format: password }
+    UserProfile:
+      type: object
+      properties:
+        id: { type: integer, format: int64, nullable: true }
+        username: { type: string }
+        email: { type: string, format: email, nullable: true }
+        avatar: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+    AuthResponse:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        token: { type: string, writeOnly: true, nullable: true }
+        user:
+          allOf: [{ $ref: '#/components/schemas/UserProfile' }]
+          nullable: true
+        message: { type: string, nullable: true }
+        code: { type: string, nullable: true }
+    ProfileUpdateRequest:
+      type: object
+      properties:
+        username: { type: string, nullable: true }
+        email: { type: string, format: email, nullable: true }
+        avatar: { type: string, nullable: true }
+        currentPassword: { type: string, format: password, nullable: true }
+        newPassword: { type: string, format: password, nullable: true }
     WidgetTokenRequest:
       type: object
       required: [deviceKey]

@@ -71,6 +71,14 @@ data class AuthSession(
     val user: UserProfile,
 )
 
+data class ProfileUpdate(
+    val username: String? = null,
+    val email: String? = null,
+    val avatar: String? = null,
+    val currentPassword: String? = null,
+    val newPassword: String? = null,
+)
+
 @Serializable
 data class DeviceCredential(
     val deviceKey: String,
@@ -94,6 +102,8 @@ data class WidgetSettings(
     val displayMode: WidgetDisplayMode = WidgetDisplayMode.ALL,
     val targetUserId: String? = null,
     val targetDeviceId: String? = null,
+    val selectedDeviceIds: List<String> = emptyList(),
+    val showDeviceSwitcher: Boolean = true,
     val theme: WidgetTheme = WidgetTheme.SYSTEM,
     val backgroundOpacityPercent: Int = 90,
     val showMusic: Boolean = true,
@@ -173,6 +183,8 @@ data class ReportingSettings(
     val intervalSeconds: Int = 10,
     val enhancedAppDetection: Boolean = false,
     val includeMedia: Boolean = true,
+    val keepAliveReminderEnabled: Boolean = false,
+    val keepAliveReminderIntervalHours: Int = 6,
 )
 
 @Serializable
