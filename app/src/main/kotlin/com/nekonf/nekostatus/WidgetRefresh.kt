@@ -105,6 +105,14 @@ object WidgetRefreshScheduler {
         WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_WORK, ExistingWorkPolicy.REPLACE, request)
     }
 
+    fun cancelAll(context: Context) {
+        val workManager = WorkManager.getInstance(context)
+        workManager.cancelUniqueWork(PERIODIC_WORK)
+        workManager.cancelUniqueWork(IMMEDIATE_WORK)
+        WidgetRefreshFeedbackStore.finish(context)
+        updatePresentation(context)
+    }
+
     private fun updatePresentation(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             NekoWidgetRenderer.updateAll(context)
@@ -157,32 +165,27 @@ object WidgetImageCache {
                     device.appIconUrl?.let { add(WidgetImageRequest(it, it)) }
                 }
             }
-            screenshotRequest(feed, settings)?.let(::add)
+            addAll(screenshotRequests(feed, settings))
         }.distinctBy(WidgetImageRequest::cacheKey)
 
-    private fun screenshotRequest(
+    private fun screenshotRequests(
         feed: WidgetFeed,
         settings: WidgetSettings,
-    ): WidgetImageRequest? {
-        if (!settings.showScreenshot) return null
+    ): List<WidgetImageRequest> {
+        if (!settings.showScreenshot) return emptyList()
         val user =
             feed.users.firstOrNull { it.userId == settings.targetUserId }
                 ?: feed.users.firstOrNull()
-        val device =
-            user?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
-                ?: user?.devices?.firstOrNull {
-                    !it.screenshotThumbnailUrl.isNullOrBlank() || !it.screenshotUrl.isNullOrBlank()
+        return screenshotDeviceSequence(user?.devices.orEmpty(), settings.targetDeviceId)
+            .mapNotNull { device ->
+                val source = device.screenshotThumbnailUrl ?: device.screenshotUrl
+                source?.takeIf(String::isNotBlank)?.let {
+                    WidgetImageRequest(
+                        source = it,
+                        cacheKey = "screenshot|${device.deviceId}|${device.screenshotUpdatedAt.orEmpty()}|$it",
+                    )
                 }
-                ?: user?.devices?.firstOrNull()
-        val source = device?.screenshotThumbnailUrl ?: device?.screenshotUrl
-        return if (device == null || source.isNullOrBlank()) {
-            null
-        } else {
-            WidgetImageRequest(
-                source = source,
-                cacheKey = "screenshot|${device.deviceId}|${device.screenshotUpdatedAt.orEmpty()}|$source",
-            )
-        }
+            }
     }
 
     private fun cacheImage(
@@ -306,8 +309,12 @@ object WidgetImageCache {
         files.drop(MAX_CACHE_FILES).forEach(File::delete)
     }
 
+    fun clear(context: Context) {
+        File(context.cacheDir, "widget-images").listFiles().orEmpty().forEach(File::delete)
+    }
+
     private const val MAX_USERS = 4
-    private const val MAX_DEVICES_PER_USER = 2
+    private const val MAX_DEVICES_PER_USER = 8
     private const val MAX_CACHE_FILES = 24
 
     private data class WidgetImageRequest(

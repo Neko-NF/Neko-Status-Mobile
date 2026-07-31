@@ -24,6 +24,39 @@ import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal data class ForegroundAppCandidate(
+    val packageName: String,
+    val eventEpochMs: Long,
+)
+
+internal data class ResolvedForegroundApp(
+    val packageName: String,
+    val appName: String,
+)
+
+internal fun resolveForegroundApp(
+    candidates: List<ForegroundAppCandidate>,
+    previous: ResolvedForegroundApp?,
+    labelResolver: (String) -> String?,
+): ResolvedForegroundApp? {
+    val ordered =
+        candidates
+            .filter { it.packageName.isNotBlank() }
+            .sortedByDescending(ForegroundAppCandidate::eventEpochMs)
+            .distinctBy(ForegroundAppCandidate::packageName)
+    if (ordered.isEmpty()) return previous
+
+    val newestEvent = ordered.first().eventEpochMs
+    return ordered
+        .asSequence()
+        .takeWhile { newestEvent - it.eventEpochMs <= INTERNAL_PACKAGE_FALLBACK_WINDOW_MS }
+        .mapNotNull { candidate ->
+            labelResolver(candidate.packageName)
+                ?.takeIf { it.isNotBlank() && it != candidate.packageName }
+                ?.let { ResolvedForegroundApp(candidate.packageName, it) }
+        }.firstOrNull()
+}
+
 @Singleton
 class DeviceSnapshotCollector
     @Inject
@@ -31,6 +64,8 @@ class DeviceSnapshotCollector
         @ApplicationContext private val context: Context,
         private val installationRepository: InstallationRepository,
     ) {
+        private var lastResolvedApp: ResolvedForegroundApp? = null
+
         fun capture(
             enhancedAppDetection: Boolean = false,
             includeMedia: Boolean = true,
@@ -40,23 +75,21 @@ class DeviceSnapshotCollector
             val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
             val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
             val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-            val packageName =
-                NekoAccessibilityService.currentPackageName.takeIf { enhancedAppDetection }
-                    ?: latestForegroundPackage()
-                    ?: ""
-            val appName =
-                if (packageName.isBlank()) {
-                    context.getString(R.string.unknown_app)
-                } else {
-                    runCatching {
-                        val info = context.packageManager.getApplicationInfo(packageName, 0)
-                        context.packageManager.getApplicationLabel(info).toString()
-                    }.getOrDefault(packageName)
+            val candidates =
+                buildList {
+                    if (enhancedAppDetection) {
+                        NekoAccessibilityService.currentPackageName?.let {
+                            add(ForegroundAppCandidate(it, NekoAccessibilityService.currentPackageEventEpochMs))
+                        }
+                    }
+                    addAll(recentForegroundPackages())
                 }
+            val resolved = resolveForegroundApp(candidates, lastResolvedApp, ::applicationLabel)
+            if (resolved != null) lastResolvedApp = resolved
             return DeviceSnapshot(
                 installationId = installationRepository.installationId,
-                appName = appName,
-                packageName = packageName,
+                appName = resolved?.appName ?: context.getString(R.string.unknown_app),
+                packageName = resolved?.packageName.orEmpty(),
                 batteryLevel = if (level >= 0 && scale > 0) (level * 100 / scale).coerceIn(0, 100) else 0,
                 isCharging = charging,
                 screenState = screenState(),
@@ -93,32 +126,48 @@ class DeviceSnapshotCollector
             }
         }
 
-        private fun latestForegroundPackage(): String? {
+        @Suppress("DEPRECATION")
+        private fun applicationLabel(packageName: String): String? =
+            runCatching {
+                val manager = context.packageManager
+                val launchLabel =
+                    manager.getLaunchIntentForPackage(packageName)
+                        ?.resolveActivity(manager)
+                        ?.let { manager.getActivityInfo(it, 0).loadLabel(manager).toString() }
+                        ?.takeIf(String::isNotBlank)
+                launchLabel
+                    ?: manager.getApplicationInfo(packageName, 0).loadLabel(manager).toString()
+            }.getOrNull()
+
+        private fun recentForegroundPackages(): List<ForegroundAppCandidate> {
             val manager = context.getSystemService(UsageStatsManager::class.java)
             val end = System.currentTimeMillis()
-            val events = manager.queryEvents(end - 60_000, end)
+            val events = manager.queryEvents(end - FOREGROUND_EVENT_LOOKBACK_MS, end)
             val event = UsageEvents.Event()
-            var latestPackage: String? = null
-            var latestTime = Long.MIN_VALUE
+            val candidates = mutableListOf<ForegroundAppCandidate>()
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
-                if ((event.eventType == UsageEvents.Event.ACTIVITY_RESUMED || event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) &&
-                    event.timeStamp >= latestTime
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
+                    event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
                 ) {
-                    latestTime = event.timeStamp
-                    latestPackage = event.packageName
+                    event.packageName?.let { candidates += ForegroundAppCandidate(it, event.timeStamp) }
                 }
             }
-            return latestPackage
+            return candidates
         }
     }
 
 private const val APP_ICON_SIZE = 96
+private const val FOREGROUND_EVENT_LOOKBACK_MS = 10 * 60 * 1_000L
+private const val INTERNAL_PACKAGE_FALLBACK_WINDOW_MS = 30_000L
 
 class NekoAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            currentPackageName = event.packageName?.toString()?.takeIf { it != packageName }
+            event.packageName?.toString()?.takeIf { it != packageName }?.let {
+                currentPackageName = it
+                currentPackageEventEpochMs = System.currentTimeMillis()
+            }
         }
     }
 
@@ -126,12 +175,17 @@ class NekoAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         currentPackageName = null
+        currentPackageEventEpochMs = 0L
         super.onDestroy()
     }
 
     companion object {
         @Volatile
         var currentPackageName: String? = null
+            private set
+
+        @Volatile
+        var currentPackageEventEpochMs: Long = 0L
             private set
     }
 }

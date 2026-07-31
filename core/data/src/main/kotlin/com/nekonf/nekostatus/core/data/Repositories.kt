@@ -7,6 +7,7 @@ import com.nekonf.nekostatus.core.model.AuthSession
 import com.nekonf.nekostatus.core.model.DeviceCredential
 import com.nekonf.nekostatus.core.model.DeviceSnapshot
 import com.nekonf.nekostatus.core.model.OperationResult
+import com.nekonf.nekostatus.core.model.ProfileUpdate
 import com.nekonf.nekostatus.core.model.ReportOutcome
 import com.nekonf.nekostatus.core.model.ReportingHealth
 import com.nekonf.nekostatus.core.model.ServerCapabilities
@@ -17,6 +18,7 @@ import com.nekonf.nekostatus.core.network.dto.AuthRequest
 import com.nekonf.nekostatus.core.network.dto.AuthResponse
 import com.nekonf.nekostatus.core.network.dto.DeviceKeyRequest
 import com.nekonf.nekostatus.core.network.dto.HandshakeRequest
+import com.nekonf.nekostatus.core.network.dto.ProfileUpdateRequest
 import com.nekonf.nekostatus.core.network.dto.StatusPayload
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -80,8 +82,56 @@ class AuthRepository
                 val response = api.me("Bearer ${current.token}")
                 response.toOperation { body ->
                     val user = body.user?.toProfile() ?: current.user
-                    AuthSession(current.token, user).also(sessionRepository::saveSession)
+                    AuthSession(current.token, user).also {
+                        sessionRepository.saveSession(it, preserveAccountBinding = true)
+                    }
                 }
+            }
+        }
+
+        suspend fun updateProfile(update: ProfileUpdate): OperationResult<AuthSession> {
+            val current =
+                sessionRepository.session.value
+                    ?: return OperationResult.Failure("NO_SESSION", "尚未登录", terminal = true)
+            val api = apiFactory.create(settingsRepository.serverConfig.first().activeUrl)
+            return request {
+                val response =
+                    api.updateProfile(
+                        authorization = "Bearer ${current.token}",
+                        request =
+                            ProfileUpdateRequest(
+                                username = update.username?.trim(),
+                                email = update.email?.trim(),
+                                avatar = update.avatar,
+                                currentPassword = update.currentPassword,
+                                newPassword = update.newPassword,
+                            ),
+                    )
+                if (!response.isSuccessful) {
+                    if (response.code() == HTTP_UNAUTHORIZED || response.code() == HTTP_FORBIDDEN) {
+                        sessionRepository.clearAccountAccess()
+                    }
+                    return@request response.toFailure(json)
+                }
+                val body =
+                    response.body()
+                        ?: return@request OperationResult.Failure("EMPTY_RESPONSE", "服务端响应为空")
+                val token = body.token ?: current.token
+                val returnedUser = body.user?.toProfile()
+                if (returnedUser != null) {
+                    return@request OperationResult.Success(saveUpdatedSession(token, returnedUser))
+                }
+                val refreshed = api.me("Bearer $token")
+                if (!refreshed.isSuccessful) {
+                    if (refreshed.code() == HTTP_UNAUTHORIZED || refreshed.code() == HTTP_FORBIDDEN) {
+                        sessionRepository.clearAccountAccess()
+                    }
+                    return@request refreshed.toFailure(json)
+                }
+                val user =
+                    refreshed.body()?.user?.toProfile()
+                        ?: return@request OperationResult.Failure("INVALID_RESPONSE", "服务端未返回用户资料")
+                OperationResult.Success(saveUpdatedSession(token, user))
             }
         }
 
@@ -148,6 +198,24 @@ class AuthRepository
 
         fun logout() = sessionRepository.clearAll()
 
+        private fun saveUpdatedSession(
+            token: String,
+            user: UserProfile,
+        ): AuthSession {
+            val session = AuthSession(token, user)
+            sessionRepository.saveSession(session, preserveAccountBinding = true)
+            sessionRepository.widgetCredential.value?.let { credential ->
+                val sameUser =
+                    credential.userId == null ||
+                        user.id == null ||
+                        credential.userId == user.id.toString()
+                if (sameUser) {
+                    sessionRepository.saveWidgetCredential(credential.copy(username = user.username))
+                }
+            }
+            return session
+        }
+
         private suspend fun authenticate(
             call: suspend (com.nekonf.nekostatus.core.network.NekoApi) -> Response<AuthResponse>,
         ): OperationResult<AuthSession> {
@@ -156,7 +224,7 @@ class AuthRepository
                 call(api).toOperation { body ->
                     val token = body.token ?: error("服务端未返回登录令牌")
                     val user = body.user?.toProfile() ?: error("服务端未返回用户资料")
-                    AuthSession(token, user).also(sessionRepository::saveSession)
+                    AuthSession(token, user).also { sessionRepository.saveSession(it) }
                 }
             }
         }
@@ -280,6 +348,10 @@ class ReportingStateStore
 
         fun update(transform: (ReportingHealth) -> ReportingHealth) {
             _health.value = transform(_health.value)
+        }
+
+        fun reset() {
+            _health.value = ReportingHealth()
         }
     }
 

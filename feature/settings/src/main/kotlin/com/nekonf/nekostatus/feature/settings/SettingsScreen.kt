@@ -9,7 +9,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.util.Patterns
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,6 +33,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
@@ -50,7 +53,9 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Widgets
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -66,20 +71,25 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -89,12 +99,15 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil3.compose.AsyncImage
 import com.nekonf.nekostatus.core.designsystem.NekoPanel
 import com.nekonf.nekostatus.core.designsystem.PrimaryAction
 import com.nekonf.nekostatus.core.designsystem.SectionHeader
@@ -113,6 +126,7 @@ import com.nekonf.nekostatus.core.model.WidgetSettings
 import com.nekonf.nekostatus.core.model.WidgetTheme
 import com.nekonf.nekostatus.core.model.WidgetUserStatus
 import com.nekonf.nekostatus.core.model.normalizeGitHubRepository
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
@@ -254,9 +268,13 @@ fun SettingsDetailScreen(
             SettingsDestination.ACCOUNT ->
                 AccountPage(
                     state = state,
+                    onSave = viewModel::saveProfile,
+                    onChangePassword = viewModel::changePassword,
                     onLogout = {
                         onReportingStopRequired()
-                        viewModel.logout()
+                        viewModel.logout {
+                            onWidgetScheduleChanged(false, state.widgetSettings.refreshIntervalMinutes)
+                        }
                     },
                     modifier = Modifier.padding(padding),
                 )
@@ -323,21 +341,269 @@ fun SettingsDetailScreen(
 @Composable
 private fun AccountPage(
     state: SettingsUiState,
+    onSave: (String, String, String?) -> Unit,
+    onChangePassword: (String, String) -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier,
 ) {
-    Column(modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        NekoPanel(Modifier.fillMaxWidth()) {
-            Icon(Icons.Rounded.AccountCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(10.dp))
-            Text(state.user?.username ?: "--", style = MaterialTheme.typography.titleLarge)
-            Text(state.user?.email ?: stringResource(R.string.settings_no_email), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val user = state.user
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var username by remember(user?.username) { mutableStateOf(user?.username.orEmpty()) }
+    var email by remember(user?.email) { mutableStateOf(user?.email.orEmpty()) }
+    var avatarPayload by remember(user?.id, user?.avatarUrl) { mutableStateOf<String?>(null) }
+    var avatarPreview by remember(user?.id, user?.avatarUrl) { mutableStateOf<Any?>(user?.avatarUrl) }
+    var avatarProcessing by remember { mutableStateOf(false) }
+    var avatarError by remember { mutableStateOf(false) }
+    var currentPassword by rememberSaveable { mutableStateOf("") }
+    var newPassword by rememberSaveable { mutableStateOf("") }
+    var confirmPassword by rememberSaveable { mutableStateOf("") }
+    var showLogoutConfirmation by rememberSaveable { mutableStateOf(false) }
+    val emailValid = email.isBlank() || Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
+    val passwordTooShort = newPassword.isNotEmpty() && newPassword.length < 6
+    val passwordMismatch = confirmPassword.isNotEmpty() && newPassword != confirmPassword
+    val passwordValid = isValidPasswordChange(currentPassword, newPassword, confirmPassword)
+    val avatarPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    avatarProcessing = true
+                    avatarError = false
+                    encodeAvatarDataUri(context, uri)
+                        .onSuccess {
+                            avatarPayload = it
+                            avatarPreview = uri
+                        }.onFailure {
+                            avatarError = true
+                        }
+                    avatarProcessing = false
+                }
+            }
         }
-        OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.settings_logout), color = MaterialTheme.colorScheme.error)
+
+    LaunchedEffect(state.passwordSaved) {
+        if (state.passwordSaved) {
+            currentPassword = ""
+            newPassword = ""
+            confirmPassword = ""
         }
     }
+
+    LazyColumn(modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            NekoPanel(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (avatarPreview != null) {
+                            AsyncImage(
+                                model = avatarPreview,
+                                contentDescription = stringResource(R.string.profile_avatar),
+                                modifier = Modifier.size(72.dp).clip(CircleShape),
+                                contentScale = ContentScale.Crop,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.AccountCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(72.dp),
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                avatarPicker.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            },
+                            enabled = !avatarProcessing && !state.profileSaving,
+                        ) {
+                            if (avatarProcessing) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text(stringResource(R.string.profile_change_avatar))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(user?.username ?: "--", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            user?.email ?: stringResource(R.string.settings_no_email),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        user?.id?.let {
+                            Text(
+                                stringResource(R.string.profile_user_id, it),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+                if (avatarError) {
+                    Text(
+                        stringResource(R.string.profile_avatar_invalid),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        item {
+            NekoPanel(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.profile_username)) },
+                    isError = username.isBlank(),
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.profile_email)) },
+                    supportingText =
+                        if (!emailValid) {
+                            { Text(stringResource(R.string.profile_email_invalid)) }
+                        } else {
+                            null
+                        },
+                    isError = !emailValid,
+                )
+                Spacer(Modifier.height(12.dp))
+                PrimaryAction(
+                    text =
+                        stringResource(
+                            if (state.profileSaving) {
+                                R.string.profile_saving
+                            } else {
+                                R.string.profile_save
+                            },
+                        ),
+                    onClick = { onSave(username.trim(), email.trim(), avatarPayload) },
+                    enabled = username.isNotBlank() && emailValid && !avatarProcessing && !state.profileSaving,
+                )
+                state.profileError?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                }
+                if (state.profileSaved) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.profile_saved), color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+        item {
+            SectionHeader(stringResource(R.string.profile_password_title))
+            NekoPanel(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = currentPassword,
+                    onValueChange = { currentPassword = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    label = { Text(stringResource(R.string.profile_current_password)) },
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = { newPassword = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    label = { Text(stringResource(R.string.profile_new_password)) },
+                    supportingText =
+                        if (passwordTooShort) {
+                            { Text(stringResource(R.string.profile_password_too_short)) }
+                        } else {
+                            null
+                        },
+                    isError = passwordTooShort,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = { confirmPassword = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    label = { Text(stringResource(R.string.profile_confirm_password)) },
+                    supportingText =
+                        if (passwordMismatch) {
+                            { Text(stringResource(R.string.profile_password_mismatch)) }
+                        } else {
+                            null
+                        },
+                    isError = passwordMismatch,
+                )
+                Spacer(Modifier.height(12.dp))
+                PrimaryAction(
+                    text =
+                        stringResource(
+                            if (state.passwordSaving) {
+                                R.string.profile_password_saving
+                            } else {
+                                R.string.profile_password_save
+                            },
+                        ),
+                    onClick = { onChangePassword(currentPassword, newPassword) },
+                    enabled = passwordValid && !state.passwordSaving,
+                )
+                state.passwordError?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                }
+                if (state.passwordSaved) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.profile_password_saved), color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+        item {
+            OutlinedButton(onClick = { showLogoutConfirmation = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.settings_logout), color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+    if (showLogoutConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirmation = false },
+            title = { Text(stringResource(R.string.logout_confirm_title)) },
+            text = { Text(stringResource(R.string.logout_confirm_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showLogoutConfirmation = false
+                        onLogout()
+                    },
+                ) {
+                    Text(stringResource(R.string.logout_confirm_action), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirmation = false }) {
+                    Text(stringResource(R.string.logout_cancel))
+                }
+            },
+        )
+    }
 }
+
+internal fun isValidPasswordChange(
+    currentPassword: String,
+    newPassword: String,
+    confirmation: String,
+): Boolean =
+    currentPassword.isNotEmpty() &&
+        newPassword.length >= 6 &&
+        confirmation == newPassword
 
 @Composable
 private fun ServerPage(
@@ -398,6 +664,7 @@ private fun ReportingPage(
     onUpdate: (ReportingSettings) -> Unit,
     modifier: Modifier,
 ) {
+    val context = LocalContext.current
     var interval by remember(settings.intervalSeconds) { mutableFloatStateOf(settings.intervalSeconds.toFloat()) }
     LazyColumn(modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
@@ -440,6 +707,54 @@ private fun ReportingPage(
                     checked = settings.enhancedAppDetection,
                     onCheckedChange = { onUpdate(settings.copy(enhancedAppDetection = it)) },
                 )
+                SettingsSwitchRow(
+                    title = stringResource(R.string.settings_keep_alive_reminder),
+                    supporting = stringResource(R.string.settings_keep_alive_reminder_support),
+                    checked = settings.keepAliveReminderEnabled,
+                    onCheckedChange = { onUpdate(settings.copy(keepAliveReminderEnabled = it)) },
+                )
+            }
+        }
+        if (settings.keepAliveReminderEnabled) {
+            item {
+                SectionHeader(stringResource(R.string.settings_keep_alive_interval))
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    listOf(
+                        6 to R.string.settings_keep_alive_6h,
+                        12 to R.string.settings_keep_alive_12h,
+                        24 to R.string.settings_keep_alive_24h,
+                        48 to R.string.settings_keep_alive_48h,
+                    ).forEachIndexed { index, (hours, label) ->
+                        SegmentedButton(
+                            selected = settings.keepAliveReminderIntervalHours == hours,
+                            onClick = { onUpdate(settings.copy(keepAliveReminderIntervalHours = hours)) },
+                            shape = SegmentedButtonDefaults.itemShape(index, 4),
+                        ) {
+                            Text(stringResource(label))
+                        }
+                    }
+                }
+            }
+            if (!context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) {
+                item {
+                    NekoPanel(Modifier.fillMaxWidth()) {
+                        Text(
+                            stringResource(R.string.settings_keep_alive_notifications_disabled),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                                )
+                            },
+                        ) {
+                            Text(stringResource(R.string.settings_open_notification_settings))
+                        }
+                    }
+                }
             }
         }
     }
@@ -497,7 +812,25 @@ private fun WidgetSettingsPage(
                 ).forEachIndexed { index, (mode, label) ->
                     SegmentedButton(
                         selected = settings.displayMode == mode,
-                        onClick = { onSettingsChange(settings.copy(displayMode = mode)) },
+                        onClick = {
+                            val selectedUser =
+                                feedState.feed?.users?.firstOrNull { it.userId == settings.targetUserId }
+                                    ?: feedState.feed?.users?.firstOrNull()
+                            onSettingsChange(
+                                if (mode == WidgetDisplayMode.SINGLE) {
+                                    settings.copy(
+                                        displayMode = mode,
+                                        targetUserId = selectedUser?.userId,
+                                        selectedDeviceIds =
+                                            settings.selectedDeviceIds.ifEmpty {
+                                                selectedUser?.devices.orEmpty().take(2).map { it.deviceId }
+                                            },
+                                    )
+                                } else {
+                                    settings.copy(displayMode = mode)
+                                },
+                            )
+                        },
                         enabled = settings.enabled && (mode != WidgetDisplayMode.ALL || isAdmin),
                         shape = SegmentedButtonDefaults.itemShape(index, 2),
                     ) { Text(stringResource(label)) }
@@ -522,12 +855,82 @@ private fun WidgetSettingsPage(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 RadioButton(
                                     selected = settings.targetUserId == user.userId,
-                                    onClick = { onSettingsChange(settings.copy(targetUserId = user.userId)) },
+                                    onClick = {
+                                        onSettingsChange(
+                                            settings.copy(
+                                                targetUserId = user.userId,
+                                                selectedDeviceIds = user.devices.take(2).map { it.deviceId },
+                                                targetDeviceId =
+                                                    user.devices.firstOrNull {
+                                                        !it.screenshotThumbnailUrl.isNullOrBlank() ||
+                                                            !it.screenshotUrl.isNullOrBlank()
+                                                    }?.deviceId
+                                                        ?: user.devices.firstOrNull()?.deviceId,
+                                            ),
+                                        )
+                                    },
                                 )
                                 Text(user.username, modifier = Modifier.weight(1f))
                                 Text(
                                     stringResource(user.statusLabel()),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (settings.enabled && settings.displayMode == WidgetDisplayMode.SINGLE) {
+            item {
+                SectionHeader(stringResource(R.string.widget_settings_status_devices))
+                NekoPanel(Modifier.fillMaxWidth()) {
+                    val selectedUser =
+                        feedState.feed?.users?.firstOrNull { it.userId == settings.targetUserId }
+                            ?: feedState.feed?.users?.firstOrNull()
+                    val devices = selectedUser?.devices.orEmpty()
+                    Text(
+                        stringResource(R.string.widget_settings_status_devices_support),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    if (devices.isEmpty()) {
+                        Text(stringResource(R.string.widget_no_devices))
+                    } else {
+                        devices.forEach { device ->
+                            val selected = device.deviceId in settings.selectedDeviceIds
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = selected,
+                                    enabled = selected || settings.selectedDeviceIds.size < 2,
+                                    onCheckedChange = { checked ->
+                                        val next =
+                                            when {
+                                                checked ->
+                                                    (settings.selectedDeviceIds + device.deviceId)
+                                                        .distinct()
+                                                        .take(2)
+                                                settings.selectedDeviceIds.size > 1 ->
+                                                    settings.selectedDeviceIds - device.deviceId
+                                                else -> settings.selectedDeviceIds
+                                            }
+                                        onSettingsChange(settings.copy(selectedDeviceIds = next))
+                                    },
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(device.deviceName)
+                                    Text(
+                                        device.appName.takeIf(String::isNotBlank)
+                                            ?: stringResource(R.string.widget_no_activity),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                WidgetBatteryIndicator(
+                                    batteryLevel = device.batteryLevel,
+                                    isCharging = device.isCharging,
+                                    palette = widgetPalette,
                                 )
                             }
                         }
@@ -603,6 +1006,13 @@ private fun WidgetSettingsPage(
                     onCheckedChange = { onSettingsChange(settings.copy(showIcons = it)) },
                 )
                 SettingsSwitchRow(
+                    title = stringResource(R.string.widget_settings_show_device_switcher),
+                    supporting = stringResource(R.string.widget_settings_show_device_switcher_support),
+                    checked = settings.showDeviceSwitcher,
+                    enabled = settings.enabled,
+                    onCheckedChange = { onSettingsChange(settings.copy(showDeviceSwitcher = it)) },
+                )
+                SettingsSwitchRow(
                     title = stringResource(R.string.widget_settings_show_screenshot),
                     supporting = stringResource(R.string.widget_settings_show_screenshot_support),
                     checked = settings.showScreenshot,
@@ -613,6 +1023,10 @@ private fun WidgetSettingsPage(
                                 ?: feedState.feed?.users?.firstOrNull()
                         val selectedDevice =
                             selectedUser?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
+                                ?: selectedUser?.devices?.firstOrNull {
+                                    !it.screenshotThumbnailUrl.isNullOrBlank() ||
+                                        !it.screenshotUrl.isNullOrBlank()
+                                }
                                 ?: selectedUser?.devices?.firstOrNull()
                         onSettingsChange(
                             settings.copy(
@@ -732,6 +1146,14 @@ private fun WidgetPreview(
     val selectedUser =
         feed?.users?.firstOrNull { it.userId == settings.targetUserId }
             ?: feed?.users?.firstOrNull()
+    val devicePages = previewDevicePages(selectedUser?.devices.orEmpty(), settings.selectedDeviceIds)
+    val switcherPreview =
+        widgetSwitcherPreviewState(
+            requested = settings.showDeviceSwitcher,
+            applicable = settings.displayMode == WidgetDisplayMode.SINGLE,
+            pageCount = devicePages.size,
+        )
+    var previewPage by remember(devicePages) { mutableIntStateOf(0) }
     val title =
         if (settings.displayMode == WidgetDisplayMode.SINGLE) {
             selectedUser?.username ?: stringResource(R.string.widget_settings_preview_title)
@@ -781,6 +1203,20 @@ private fun WidgetPreview(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (switcherPreview.visible) {
+                        IconButton(
+                            onClick = { previewPage = (previewPage + 1).mod(devicePages.size) },
+                            enabled = switcherPreview.enabled,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.Sync,
+                                contentDescription = stringResource(R.string.widget_settings_switch_device),
+                                tint = if (switcherPreview.enabled) palette.accent else palette.onSurfaceVariant,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
                     Text(
                         text = widgetPreviewUpdatedLabel(feedState),
                         color = palette.onSurfaceVariant,
@@ -821,10 +1257,24 @@ private fun WidgetPreview(
                     feed.users.isEmpty() ->
                         WidgetPreviewMessage(R.string.widget_no_visible_users, palette, showProgress = false)
                     settings.displayMode == WidgetDisplayMode.SINGLE && selectedUser != null ->
-                        WidgetPreviewDevices(selectedUser, settings, palette)
+                        WidgetPreviewDevices(devicePages.getOrNull(previewPage).orEmpty(), settings, palette)
                     else -> WidgetPreviewUsers(feed.users.take(2), settings, palette)
                 }
             }
+        }
+        if (switcherPreview.visible && !switcherPreview.enabled) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(
+                    if (settings.displayMode == WidgetDisplayMode.SINGLE) {
+                        R.string.widget_settings_switcher_no_more_devices
+                    } else {
+                        R.string.widget_settings_switcher_single_user_required
+                    },
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -867,10 +1317,25 @@ private fun WidgetSnapshotPreview(
     val user =
         feedState.feed?.users?.firstOrNull { it.userId == settings.targetUserId }
             ?: feedState.feed?.users?.firstOrNull()
+    val screenshotDevices =
+        user?.devices.orEmpty()
+            .filter { !it.screenshotThumbnailUrl.isNullOrBlank() || !it.screenshotUrl.isNullOrBlank() }
+            .let { devices ->
+                val selected = devices.firstOrNull { it.deviceId == settings.targetDeviceId }
+                listOfNotNull(selected) + devices.filterNot { it.deviceId == selected?.deviceId }
+            }
+    var previewPage by remember(screenshotDevices) { mutableIntStateOf(0) }
     val device =
-        user?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
+        screenshotDevices.getOrNull(previewPage)
+            ?: user?.devices?.firstOrNull { it.deviceId == settings.targetDeviceId }
             ?: user?.devices?.firstOrNull()
     val hasScreenshot = !device?.screenshotThumbnailUrl.isNullOrBlank() || !device?.screenshotUrl.isNullOrBlank()
+    val switcherPreview =
+        widgetSwitcherPreviewState(
+            requested = settings.showDeviceSwitcher,
+            applicable = true,
+            pageCount = screenshotDevices.size,
+        )
     val unavailableMessage =
         when {
             !settings.enabled -> R.string.widget_settings_preview_disabled
@@ -924,6 +1389,20 @@ private fun WidgetSnapshotPreview(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (switcherPreview.visible) {
+                        IconButton(
+                            onClick = { previewPage = (previewPage + 1).mod(screenshotDevices.size) },
+                            enabled = switcherPreview.enabled,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.Sync,
+                                contentDescription = stringResource(R.string.widget_settings_switch_device),
+                                tint = if (switcherPreview.enabled) palette.accent else palette.onSurfaceVariant,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
                     Text(
                         widgetPreviewUpdatedLabel(feedState),
                         color = palette.onSurfaceVariant,
@@ -1044,7 +1523,32 @@ private fun WidgetSnapshotPreview(
                 }
             }
         }
+        if (switcherPreview.visible && !switcherPreview.enabled) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.widget_settings_switcher_no_more_devices),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
+}
+
+internal data class WidgetSwitcherPreviewState(
+    val visible: Boolean,
+    val enabled: Boolean,
+)
+
+internal fun widgetSwitcherPreviewState(
+    requested: Boolean,
+    applicable: Boolean,
+    pageCount: Int,
+): WidgetSwitcherPreviewState {
+    val visible = requested
+    return WidgetSwitcherPreviewState(
+        visible = visible,
+        enabled = visible && applicable && pageCount > 1,
+    )
 }
 
 @Composable
@@ -1065,11 +1569,10 @@ private fun WidgetPreviewUsers(
 
 @Composable
 private fun WidgetPreviewDevices(
-    user: WidgetUserStatus,
+    devices: List<WidgetDeviceStatus>,
     settings: WidgetSettings,
     palette: WidgetPreviewPalette,
 ) {
-    val devices = user.devices.take(2)
     if (devices.isEmpty()) {
         WidgetPreviewMessage(R.string.widget_no_devices, palette, showProgress = false)
         return
@@ -1082,6 +1585,19 @@ private fun WidgetPreviewDevices(
             }
         }
     }
+}
+
+private fun previewDevicePages(
+    devices: List<WidgetDeviceStatus>,
+    selectedDeviceIds: List<String>,
+): List<List<WidgetDeviceStatus>> {
+    if (devices.isEmpty()) return emptyList()
+    val requestedIds = selectedDeviceIds.filter(String::isNotBlank).distinct().take(2)
+    val pageSize = requestedIds.size.takeIf { it > 0 } ?: minOf(2, devices.size)
+    val selected = requestedIds.mapNotNull { id -> devices.firstOrNull { it.deviceId == id } }
+    val firstPage = selected.ifEmpty { devices.take(pageSize) }
+    val remaining = devices.filterNot { device -> firstPage.any { it.deviceId == device.deviceId } }
+    return listOf(firstPage) + remaining.chunked(pageSize)
 }
 
 @Composable

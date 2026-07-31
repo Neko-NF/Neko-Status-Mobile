@@ -43,6 +43,8 @@ class SettingsRepository
             val intervalSeconds = intPreferencesKey("report_interval_seconds")
             val enhancedDetection = booleanPreferencesKey("enhanced_app_detection")
             val includeMedia = booleanPreferencesKey("include_media")
+            val keepAliveReminderEnabled = booleanPreferencesKey("keep_alive_reminder_enabled")
+            val keepAliveReminderIntervalHours = intPreferencesKey("keep_alive_reminder_interval_hours")
             val themeMode = stringPreferencesKey("theme_mode")
             val dynamicColor = booleanPreferencesKey("dynamic_color")
             val onboardingComplete = booleanPreferencesKey("onboarding_complete")
@@ -75,6 +77,16 @@ class SettingsRepository
                 dataStore.data.map { it[Keys.includeMedia] ?: true },
             ) { enabled, restore, interval, enhanced, includeMedia ->
                 ReportingSettings(enabled, restore, interval, enhanced, includeMedia)
+            }.combine(
+                combine(
+                    dataStore.data.map { it[Keys.keepAliveReminderEnabled] ?: false },
+                    dataStore.data.map { normalizeKeepAliveReminderInterval(it[Keys.keepAliveReminderIntervalHours] ?: 6) },
+                ) { enabled, intervalHours -> enabled to intervalHours },
+            ) { settings, (reminderEnabled, reminderIntervalHours) ->
+                settings.copy(
+                    keepAliveReminderEnabled = reminderEnabled,
+                    keepAliveReminderIntervalHours = reminderIntervalHours,
+                )
             }.distinctUntilChanged()
 
         val themeMode: Flow<String> = dataStore.data.map { it[Keys.themeMode] ?: "system" }.distinctUntilChanged()
@@ -134,6 +146,9 @@ class SettingsRepository
                 it[Keys.intervalSeconds] = settings.intervalSeconds.coerceIn(10, 300)
                 it[Keys.enhancedDetection] = settings.enhancedAppDetection
                 it[Keys.includeMedia] = settings.includeMedia
+                it[Keys.keepAliveReminderEnabled] = settings.keepAliveReminderEnabled
+                it[Keys.keepAliveReminderIntervalHours] =
+                    normalizeKeepAliveReminderInterval(settings.keepAliveReminderIntervalHours)
             }
         }
 
@@ -194,6 +209,10 @@ class SettingsRepository
             }
         }
     }
+
+internal fun normalizeKeepAliveReminderInterval(hours: Int): Int = KEEP_ALIVE_REMINDER_INTERVALS.minBy { kotlin.math.abs(it - hours) }
+
+private val KEEP_ALIVE_REMINDER_INTERVALS = listOf(6, 12, 24, 48)
 
 @Module
 @InstallIn(SingletonComponent::class)

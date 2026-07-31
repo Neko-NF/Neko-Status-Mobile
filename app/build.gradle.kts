@@ -30,8 +30,8 @@ android {
         applicationId = "com.nekonf.nekostatus"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2_000_004
-        versionName = "2.0.0-alpha.4"
+        versionCode = 2_000_005
+        versionName = "2.0.0-alpha.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "PRODUCTION_SERVER_URL", "\"https://nekostatus.koirin.com\"")

@@ -1,6 +1,7 @@
 package com.nekonf.nekostatus.core.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.nekonf.nekostatus.core.model.ReportingSettings
 import com.nekonf.nekostatus.core.model.UpdateSettings
 import com.nekonf.nekostatus.core.model.UpdateSource
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -26,6 +27,28 @@ class SettingsRepositoryTest {
             val repository = createRepository()
 
             assertEquals(UpdateSettings(), repository.updateSettings.first())
+        }
+
+    @Test
+    fun `keep alive reminders default off and persist supported interval`() =
+        runTest {
+            val dataStore = createDataStore()
+            val repository = SettingsRepository(dataStore)
+
+            assertFalse(repository.reportingSettings.first().keepAliveReminderEnabled)
+            assertEquals(6, repository.reportingSettings.first().keepAliveReminderIntervalHours)
+
+            repository.updateReporting(
+                ReportingSettings(
+                    enabled = true,
+                    keepAliveReminderEnabled = true,
+                    keepAliveReminderIntervalHours = 48,
+                ),
+            )
+            val restored = SettingsRepository(dataStore).reportingSettings.first()
+
+            assertTrue(restored.keepAliveReminderEnabled)
+            assertEquals(48, restored.keepAliveReminderIntervalHours)
         }
 
     @Test

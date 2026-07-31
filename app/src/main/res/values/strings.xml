@@ -9,6 +9,11 @@
     <string name="reporting_notification_title">Neko Status 正在运行</string>
     <string name="reporting_notification_text">正在同步设备状态</string>
     <string name="reporting_stop">停止</string>
+    <string name="keep_alive_channel_name">保活提醒</string>
+    <string name="keep_alive_channel_description">定期提醒用户主动恢复状态上报</string>
+    <string name="keep_alive_notification_title">保持 Neko Status 在线</string>
+    <string name="keep_alive_notification_text">点击一次可唤醒状态上报，减少后台中断。</string>
+    <string name="keep_alive_notification_action">保持在线</string>
     <string name="accessibility_description">可选增强：仅在窗口切换时读取前台应用包名，不读取屏幕内容。</string>
     <string name="widget_description">显示关注用户及其设备的最近状态。</string>
     <string name="widget_snapshot_description">显示所选关注设备的最近截图与状态。</string>
@@ -32,6 +37,7 @@
     <string name="widget_cached_at">缓存于 %1$s</string>
     <string name="widget_refresh">刷新</string>
     <string name="widget_refreshing">正在刷新</string>
+    <string name="widget_switch_device">切换设备</string>
     <string name="widget_battery">%1$d%%</string>
     <string name="widget_battery_charging">充电 %1$d%%</string>
     <string name="widget_battery_icon">电池</string>

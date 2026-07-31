@@ -9,6 +9,11 @@
     <string name="reporting_notification_title">Neko Status is running</string>
     <string name="reporting_notification_text">Synchronizing device state</string>
     <string name="reporting_stop">Stop</string>
+    <string name="keep_alive_channel_name">Keep-alive reminders</string>
+    <string name="keep_alive_channel_description">Periodically asks the user to resume status reporting</string>
+    <string name="keep_alive_notification_title">Keep Neko Status online</string>
+    <string name="keep_alive_notification_text">Tap once to wake status reporting and reduce background interruptions.</string>
+    <string name="keep_alive_notification_action">Keep online</string>
     <string name="accessibility_description">Optional enhancement that reads only the foreground package on window changes, not screen content.</string>
     <string name="widget_description">Shows recent status for followed users and their devices.</string>
     <string name="widget_snapshot_description">Shows the latest screenshot and status for a selected followed device.</string>
@@ -32,6 +37,7 @@
     <string name="widget_cached_at">Cached %1$s</string>
     <string name="widget_refresh">Refresh</string>
     <string name="widget_refreshing">Refreshing</string>
+    <string name="widget_switch_device">Switch device</string>
     <string name="widget_battery">%1$d%%</string>
     <string name="widget_battery_charging">Charging %1$d%%</string>
     <string name="widget_battery_icon">Battery</string>
