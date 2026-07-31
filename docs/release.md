@@ -96,6 +96,18 @@ Gradle 依赖校验元数据尚未启用。后续应在依赖集合稳定后生�
 `.sha256`、`update.json`、APK 元数据和官方证书
 `f1d996d6a5cda3c2b285425dffa45198490c8c00a0ff84488f6cf19025b2e040` 一致。
 
+`v2.0.0-alpha.5` 已于 2026-07-31 作为普通 Release 公开并设为 latest：
+
+- [Release](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.5)
+- [Publish signed Android release 运行 30603963520](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30603963520)
+- [默认分支 Verify Android 运行 30603767793](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30603767793)
+
+通过无凭据公开地址重新下载三个资产后，确认版本 `2.0.0-alpha.5` / `2000005`、包名
+`com.nekonf.nekostatus`、APK 大小 27,338,429 字节、SHA-256
+`aeaf3192588fa947153706a4541f87888e476d13431fa68a643bf6e27bcaa7b8`，且 GitHub digest、
+`.sha256`、`update.json`、APK 元数据和官方证书
+`f1d996d6a5cda3c2b285425dffa45198490c8c00a0ff84488f6cf19025b2e040` 一致。
+
 API 36 模拟器中的公开 `2.0.0-alpha.3` 已通过应用内入口找到并下载公开
 `2.0.0-alpha.4`。旧版在 DownloadManager 成功后仍停留在 91%，重启应用后按既有恢复逻辑
 完成验证并进入 READY；授予未知来源权限并再次点击安装后，Google 系统安装器显示
@@ -112,6 +124,9 @@ API 36 模拟器中的公开 `2.0.0-alpha.3` 已通过应用内入口找到并�
 模拟器可验证 API 级别行为、Intent、URI 授权、签名和状态恢复，但不能替代 OEM Launcher、
 权限页和安装器的实体机验收。截至 2026-07-27，本轮仅连接 API 36 模拟器，实体设备未连接；
 因此不得把 `2.0.0-alpha.4` 候选版本描述为已完成 ColorOS 实体机升级验收。
+
+截至 2026-07-31，`2.0.0-alpha.5` 已完成公开资产下载与签名复核，但尚未从上一公开 latest
+走完整应用内覆盖升级，也未完成 ColorOS 实体机升级验收；不得把资产验证等同于真机发布门禁。
 
 个人仓库使用相同清单契约。APK 的当前签名集合必须与已安装版本完全一致；首版不支持证书
 轮换。使用自有签名的 fork 必须先作为自己的基线安装，不能覆盖官方安装版。

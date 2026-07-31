@@ -68,6 +68,14 @@
 `8ec28ba6933b2537c5f27797764894f969af2bd4928c985fb7bd96a32868f136`；公开下载后的
 GitHub digest、`.sha256`、`update.json`、APK 元数据和官方证书均一致。
 
+账号隔离与微件切换发布验证（2026-07-31）：[`v2.0.0-alpha.5`](https://github.com/Neko-NF/Neko-Status-Mobile/releases/tag/v2.0.0-alpha.5)
+已公开并设为 latest。默认分支
+[Verify 运行 30603767793](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30603767793)
+和签名[发布运行 30603963520](https://github.com/Neko-NF/Neko-Status-Mobile/actions/runs/30603963520)
+均成功。公开 APK 为 `2.0.0-alpha.5` / `2000005`、27,338,429 字节，SHA-256 为
+`aeaf3192588fa947153706a4541f87888e476d13431fa68a643bf6e27bcaa7b8`；重新下载后的
+GitHub digest、`.sha256`、`update.json`、APK 元数据和官方证书均一致。
+
 API 36 模拟器中的公开 `2.0.0-alpha.3` 已在应用内找到、下载并验证公开 `alpha.4`，授权后
 Google 系统安装器显示“要更新此应用吗？”。旧 `alpha.3` 的下载完成界面停滞需要重启恢复，
 且授权返回后需要再次点击安装；这两点均已在 `alpha.4` 修复。最终安装按本轮范围取消，所以
@@ -82,6 +90,9 @@ Google 系统安装器显示“要更新此应用吗？”。旧 `alpha.3` 的�
 
 截至 2026-07-27，本轮发布链路仅连接 API 36 模拟器，实体设备未连接。模拟器可以验证版本、
 签名、Intent 和应用状态，但不等于 ColorOS 实体机验收；因此以上真机项目保持未完成。
+
+截至 2026-07-31，`alpha.5` 已完成公开资产下载、哈希、清单、包元数据和签名复核；尚未从
+上一公开 latest 完成应用内覆盖升级，也未完成 ColorOS 实体机升级，真机项目继续保持未完成。
 
 模拟器发布局部验证（2026-07-27）：从 GitHub 远程下载的正式 `2.0.0-alpha.3` APK 已覆盖安装
 到 API 36 模拟器，版本更新为 `2000003`，登录会话得到保留。随后公开 `alpha.3` 已通过应用内
