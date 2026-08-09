@@ -79,7 +79,7 @@ jobs:
           ref: ${{ needs.preflight.outputs.release_sha }}
           persist-credentials: false
 
-      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Verify Gradle 8.11.1 wrapper fingerprint
         run: |
@@ -113,7 +113,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Verify Gradle 8.11.1 wrapper fingerprint
         run: |
